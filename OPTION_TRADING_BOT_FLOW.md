@@ -1,0 +1,475 @@
+# Option Trading Bot Flow
+
+## 1. System Startup
+
+- Initialize broker API connection
+- Load configuration and credentials
+- **Market Hours & Holiday Management:**
+  - **Trading Hours**: 9:15 AM - 3:30 PM (Monday to Friday)
+  - **Pre-market**: 9:00 AM - 9:15 AM (preparation phase)
+  - **Post-market**: 3:30 PM - 4:00 PM (settlement phase)
+  - **Weekend Check**: Skip trading on Saturday & Sunday
+  - **Holiday Calendar**: Load NSE holiday list for current year
+  - **Auto-shutdown**: Stop trading during non-market hours
+  - **Session Validation**: Check if market is open before trading
+- Check system health and connectivity
+
+## 2. Token Management & Data Collection
+
+- **CSV Download & Parsing:**
+  - Download CSV from broker at month-end expiry
+  - If CSV not available, use broker API to fetch token list
+  - Parse CSV/API response to extract future and option tokens
+- **First Time Setup:**
+  - Filter by instrument type (FUT/OPT)
+  - Group by underlying symbol (NIFTY, BANKNIFTY, etc.)
+  - Separate futures (FUT) and options (OPT) tokens
+  - Identify expiry dates and strike prices
+  - Create master token mapping database
+- **Token Validation:**
+  - Validate token status (active/suspended/expired)
+  - Check lot sizes and tick sizes for each token
+  - Verify trading hours and market timings
+  - Filter by minimum price (avoid penny stocks)
+  - Check corporate actions (splits, bonuses, dividends)
+
+## 3. Underlying Classification & Expiry Management
+
+- **Index Options (NIFTY, BANKNIFTY):**
+  - Cash settled (no physical delivery)
+  - Lower margin requirements
+  - Monthly + weekly expiry available
+  - Higher liquidity and volume
+- **Stock Options (RELIANCE, TCS, etc.):**
+  - Physical settlement (delivery required)
+  - Higher margin requirements near expiry
+  - Monthly expiry only
+  - Lower liquidity, higher spreads
+- **Expiry Strategy:**
+  - Index Options: Trade monthly + weekly contracts
+  - Stock Options: Trade monthly contracts only
+  - Trade monthly contracts until margin increases
+  - Switch to next month when margin increases
+  - Avoid weekly contracts near expiry (last 2 days)
+
+## 4. Data Download & Management
+
+- **Historical Data Download:**
+  - Download 3 months of historical data for futures and options
+  - Download 1-2 years of historical data for underlying stocks/indices
+  - Store OHLCV data for multiple timeframes (1min, 5min, 15min, 1hr, daily)
+  - Download option chain historical data (3 months max)
+  - Store volatility data (IV, HV) for each strike
+  - **Data Pattern Analysis:**
+    - Analyze last timestamp of 1-hour historical data
+    - Check if it ends at 2:45, 3:00, 3:15, or 3:30
+    - Determine actual 1-hour bar structure from historical data
+    - Set timeframe boundaries to match historical pattern
+    - Ensure continuity between historical and real-time data
+  - **Data Limitations:**
+    - Futures/Options: 3 months maximum
+    - Underlying stocks: 1-2 years available
+    - Index data: 1-2 years available
+- **Data Source Selection Strategy:**
+  - **Historical API**: Use for backtesting and initial data setup
+    - Download 3 months of historical data for futures/options
+    - Download 1-2 years of underlying stock/index data
+    - Build timeframe charts (1min, 5min, 15min, 1hr, daily)
+    - Calculate technical indicators and volatility
+    - **When to use**: System startup, backtesting, strategy development
+  - **Market Data API**: Use for periodic updates and specific queries
+    - Get current LTP for specific instruments
+    - Fetch option chain data periodically
+    - Get margin and position details
+    - Check instrument status and validity
+    - **When to use**: Every 5-10 minutes, on-demand queries, validation
+  - **WebSocket**: Use for real-time trading decisions
+    - Live price updates for active trading
+    - Real-time option chain changes
+    - Instant order book updates
+    - Live P&L and position monitoring
+    - **When to use**: During active trading hours, real-time decisions
+- **Underlying-Options Data Sync Strategy:**
+  - **Primary Data Source**: Use underlying (NIFTY, BANKNIFTY) for trend analysis
+    - Download 1-2 years of daily underlying data
+    - Calculate daily/weekly/monthly trends
+    - Generate trend signals from underlying data
+    - Use for higher timeframe trend confirmation
+  - **Options Data Integration**:
+    - Download 3 months of options data for current trading
+    - Sync options data with underlying trends
+    - Map options strikes to underlying price levels
+    - Update options data when underlying trends change
+  - **Data Synchronization Process**:
+    - **Daily Sync**: Update underlying daily data every night
+    - **Options Refresh**: Update options data monthly (new contracts)
+    - **Trend Alignment**: Ensure options strategy aligns with underlying trends
+    - **Token Mapping**: Keep options tokens synced with underlying price levels
+- **Strategy Data Flow**:
+  - **Trend Detection**: Use underlying daily data (1-2 years)
+  - **Signal Generation**: Use underlying intraday data (current month)
+  - **Options Selection**: Use current options data (3 months)
+  - **Execution**: Use real-time options data via WebSocket
+- **Data Sync Maintenance**:
+  - **Token Selection Sync**:
+    - Map underlying price to option strikes
+    - Update option tokens when underlying moves >50 points
+    - Maintain strike-to-price mapping database
+    - Sync option chain with underlying trends
+  - **Daily Data Updates**:
+    - Update underlying daily data at market close
+    - Recalculate trend indicators from underlying data
+    - Update options token list based on new strikes
+    - Sync historical data with current market conditions
+  - **Real-time Sync**:
+    - Monitor underlying price changes via WebSocket
+    - Update ATM calculations in real-time
+    - Adjust option token subscriptions based on price movement
+    - Maintain sync between underlying trends and options strategy
+  - **Data Validation**:
+    - Verify underlying data completeness
+    - Check options data availability for selected strikes
+    - Validate trend signals against underlying data
+    - Ensure options tokens are still valid and liquid
+- **Kite API Rate Limits & Management:**
+  - **Rate Limits**:
+    - **Historical API**: 3 requests per second
+    - **Market Data API**: 3 requests per second
+    - **WebSocket**: No rate limit (but connection limits apply)
+    - **Order API**: 3 requests per second
+  - **Rate Limit Handling**:
+    - **Request Queuing**: Queue requests to stay within limits
+    - **Exponential Backoff**: Retry with increasing delays on 429 errors
+    - **Request Batching**: Combine multiple requests where possible
+    - **Priority System**: Critical requests (orders) get priority
+  - **Optimization Strategies**:
+    - **Cache Data**: Store frequently accessed data locally
+    - **Batch Requests**: Use kite.quote() for multiple instruments
+    - **WebSocket Priority**: Use WebSocket for real-time data
+    - **Scheduled Updates**: Update non-critical data every 5-10 minutes
+- **Real-time Data Collection:**
+  - **WebSocket Connection:**
+    - Establish websocket connection to broker
+    - Subscribe to live market data feeds
+    - Stream real-time price updates
+    - Auto-reconnect on connection loss
+  - **Live Data Updates:**
+    - Real-time option chain data via websocket
+    - Live underlying asset prices (NIFTY, BANKNIFTY, etc.)
+    - Continuous volatility data updates
+    - Real-time option Greeks (Delta, Gamma, Theta, Vega)
+    - Live order book and trade data
+- **Timeframe Construction from Tick Data:**
+  - **Market Time Boundaries**: Use exact market time (9:15 AM - 3:30 PM)
+  - **1-minute bars**: 9:15-9:16, 9:16-9:17, 9:17-9:18... 3:29-3:30
+  - **5-minute bars**: 9:15-9:20, 9:20-9:25, 9:25-9:30... 3:25-3:30
+  - **15-minute bars**: 9:15-9:30, 9:30-9:45, 9:45-10:00... 3:15-3:30
+  - **1-hour bars**: Dynamic based on historical data analysis with day carryover
+    - **If historical data ends at 2:45**:
+      - Previous day: 2:15-2:45 (45 min)
+      - Current day: 9:15-9:30 (15 min) → Complete 1-hour bar at 9:30
+      - Then: 9:30-10:30, 10:30-11:30, 11:30-12:30, 12:30-1:30, 1:30-2:30, 2:30-3:30
+      - Next day: 3:00-3:30 (30 min) + 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+    - **If historical data ends at 3:00**:
+      - Previous day: 2:30-3:00 (30 min)
+      - Current day: 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+      - Then: 9:45-10:45, 10:45-11:45, 11:45-12:45, 12:45-1:45, 1:45-2:45, 2:45-3:30
+      - Next day: 3:15-3:30 (15 min) + 9:15-10:00 (45 min) → Complete 1-hour bar at 10:00
+    - **If historical data ends at 3:15**:
+      - Previous day: 2:45-3:15 (30 min)
+      - Current day: 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+      - Then: 9:45-10:45, 10:45-11:45, 11:45-12:45, 12:45-1:45, 1:45-2:45, 2:45-3:30
+      - Next day: 3:00-3:30 (30 min) + 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+    - **If historical data ends at 3:30**:
+      - Previous day: 3:00-3:30 (30 min)
+      - Current day: 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+      - Then: 9:45-10:45, 10:45-11:45, 11:45-12:45, 12:45-1:45, 1:45-2:45, 2:45-3:30
+      - Next day: 3:00-3:30 (30 min) + 9:15-9:45 (30 min) → Complete 1-hour bar at 9:45
+  - **Daily bars**: 9:15 AM - 3:30 PM (single bafr for entire session)
+  - **Time Alignment**: Ensure all timeframes align with market hours
+  - **No Partial Bars**: Don't create bars outside market hours
+  - **Historical Data Alignment**: Match downloaded data timeframe structure
+  - **15-minute Gap Handling**:
+    - First 15 minutes (9:15-9:30) used for 1-minute and 5-minute bars only
+    - Last 15 minutes (3:15-3:30) used for 1-minute and 5-minute bars only
+    - 1-hour bars start at 9:30 to avoid extra 15-minute bar
+  - **Real-time aggregation**: Update timeframes as new ticks arrive
+- **Missing Data Handling (Options-Specific):**
+  - **Gap Detection**: Identify missing ticks/timeframes
+  - **Data Recovery**: Request missing data from broker API
+  - **Options Data Strategy**:
+    - **No Interpolation**: Never interpolate option prices (discrete jumps)
+    - **Discard Incomplete Bars**: Remove bars with missing data points
+    - **Wait for Complete Data**: Only use fully complete bars for analysis
+    - **Strike Validation**: Ensure all strikes in bar have valid data
+  - **Underlying Data Strategy**:
+    - **Interpolation Allowed**: Linear interpolation for underlying prices only
+    - **Small Gaps**: Fill gaps <5 minutes for underlying data
+    - **Large Gaps**: Discard bars with gaps >10 minutes
+  - **Reconstruction**: Rebuild timeframes when data is recovered
+  - **Fallback**: Use cached data if real-time fails
+  - **Quality Control**: Validate data completeness before using for trading
+- **Data Storage & Management:**
+  - Store data in structured format (CSV/JSON/DB)
+  - Implement data compression for large datasets
+  - Create data backup and recovery system
+  - Monitor data quality and completeness
+- **Data Validation:**
+  - Check for missing data points
+  - Validate price continuity and gaps
+  - Handle corporate actions and adjustments
+  - Update data when new contracts are added
+- **Market Closure Handling:**
+  - **Weekend Mode**: System maintenance and data backup
+  - **Holiday Mode**: Skip trading, update holiday calendar
+  - **Early Closure**: Handle special market hours (e.g., Diwali)
+  - **Session Breaks**: Handle lunch breaks if applicable
+  - **Emergency Closure**: Handle unexpected market shutdowns
+  - **Position Management**: Close positions before market close
+- **Market Off-Time Actions:**
+  - **Token Refresh**: Re-login and get fresh tokens
+  - **Data Backup**: Backup all trading data and logs
+  - **System Maintenance**: Update software, clear temp files
+  - **Strategy Analysis**: Review performance, update parameters
+  - **Holiday Calendar Update**: Check for upcoming holidays
+  - **Position Review**: Analyze closed positions and P&L
+  - **Next Day Preparation**: Load tomorrow's trading plan
+- **Market On-Time Actions:**
+  - **Session Validation**: Check if market is open
+  - **Token Validation**: Verify tokens are still valid
+  - **Auto Re-login**: If token expired, re-login immediately
+  - **Data Sync**: Sync with latest market data
+  - **Position Check**: Verify all positions are active
+  - **Strategy Activation**: Start trading based on signals
+
+## 4.5. Dynamic ATM Management & Token Switching
+
+- **ATM Calculation & Monitoring:**
+  - **ATM Calculation**: Current underlying price ± 50 points (adjustable)
+  - **Price Monitoring**: Track underlying price changes every 5-10 seconds
+  - **ATM Update Trigger**: When price moves >50 points from current ATM
+  - **Strike Range**: Monitor 5-10 strikes around current ATM
+- **Token Pool Management:**
+  - **Active Token Pool**: Maintain 5-10 CE/PE tokens around ATM
+  - **Buffer Tokens**: Keep 2-3 strikes on each side for smooth transitions
+  - **Liquidity Check**: Verify new tokens have sufficient OI/volume
+  - **Token Validation**: Ensure tokens are active and tradeable
+- **Dynamic Token Switching:**
+  - **Add New Tokens**: When price moves, add new ATM tokens
+  - **Remove Old Tokens**: Remove tokens >100 points away from ATM
+  - **Gradual Replacement**: Update token list over 1-2 minutes
+  - **No Trade Interruption**: Switch tokens without stopping ongoing trades
+  - **Position Continuity**: Maintain existing positions while updating token pool
+- **Gap-Up/Gap-Down Handling:**
+  - **Gap Detection**: Check for opening gaps >100 points at 9:15 AM
+    - Compare current price with previous day's close
+    - Calculate gap percentage: (Open - Previous Close) / Previous Close \* 100
+    - Trigger gap handling if gap >2% (approximately 100+ points for NIFTY)
+  - **Gap Response Strategy**:
+    - **Immediate Token Refresh**: Cancel all existing subscriptions
+    - **New ATM Calculation**: Recalculate ATM based on gap-adjusted price
+    - **Emergency Token Pool**: Subscribe to 10-15 strikes around new ATM
+    - **Wider Strike Range**: Use ±100 points instead of ±50 for gap scenarios
+    - **Liquidity Priority**: Focus on highest OI/volume strikes only
+  - **Gap Recovery Process**:
+    - **Wait for Stability**: Wait 2-3 minutes for price to stabilize
+    - **Reassess ATM**: Recalculate ATM after initial volatility
+    - **Optimize Token Pool**: Reduce to normal ±50 point range
+    - **Resume Normal Trading**: Continue with standard ATM management
+  - **Gap Prevention Measures**:
+    - **Pre-Market Analysis**: Check overnight news and global markets
+    - **Wider Initial Range**: Start with ±100 points at market open
+    - **Quick Adaptation**: Update tokens within first 5 minutes
+    - **Fallback Tokens**: Keep extra tokens ready for gap scenarios
+
+## 4.6. High Volatility Management
+
+- **Volatility Detection (Kite API Available):**
+  - **VIX Monitoring**: Track INDIA VIX levels and intraday changes
+    - Get instrument token for "INDIA VIX" from instruments list
+    - Fetch live VIX value using kite.ltp("NSE:INDIA VIX")
+    - Subscribe to VIX via WebSocket for real-time updates
+    - **VIX Spike Detection**: Monitor VIX changes >5 points in 10 minutes
+    - **VIX Circuit Breaker**: Stop trading if VIX jumps >7 points in 5 minutes
+  - **Intraday Volatility Thresholds**:
+    - **Normal VIX**: 12-18 (continue normal trading)
+    - **Elevated VIX**: 18-25 (reduce position sizes by 50%)
+    - **High VIX**: 25-30 (reduce position sizes by 75%, tighter stops)
+    - **Extreme VIX**: >30 (pause trading, close existing positions)
+  - **Flash Spike Detection**:
+    - **VIX Spike**: >5 point increase in 10 minutes
+    - **Price Spike**: >2% move in 5 minutes
+    - **Volume Spike**: >300% of average volume in 15 minutes
+    - **Circuit Breaker**: Immediate trading halt on flash spikes
+  - **Price Movement**: Monitor 5-minute price changes >1%
+  - **Volume Spikes**: Detect unusual volume increases from historical data
+  - **Gap Analysis**: Check for opening gaps >0.5% using OHLC data
+  - **Volatility Calculation**: Calculate historical volatility from price data
+  - **Price Range**: Monitor daily high-low range expansion
+- **High Volatility Response Strategy:**
+  - **Position Sizing**: Reduce position sizes by 50-75%
+  - **Timeframe Switch**: Move to lower timeframes (15min → 5min, 1hr → 15min)
+  - **Strike Selection**: Focus on ATM options only (avoid OTM)
+  - **Entry Timing**: Wait for pullbacks, avoid chasing moves
+  - **Stop Loss**: Tighten stops to 0.5-1% of underlying
+  - **Target Management**: Use dynamic targets (2-5x risk)
+- **Circuit Breaker Logic**:
+  - **Level 1 (VIX 18-25)**: Reduce position sizes by 50%
+  - **Level 2 (VIX 25-30)**: Reduce position sizes by 75%, tighten stops
+  - **Level 3 (VIX >30)**: Pause new trades, close existing positions
+  - **Flash Spike Response**: Immediate trading halt, close all positions
+  - **Recovery Process**: Wait for VIX to drop below threshold + 2 points
+  - **Gradual Resume**: Start with 25% position sizes, gradually increase
+- **Risk Controls:**
+  - **Maximum Positions**: Limit to 2-3 concurrent positions
+  - **Daily Loss Limit**: Set strict daily loss limits
+  - **Position Duration**: Reduce holding time to 15-30 minutes
+  - **Delta Management**: Monitor and hedge delta exposure
+  - **Margin Monitoring**: Increase margin buffer by 25%
+- **Volatility-Specific Actions (Kite API Available):**
+  - **Avoid Weekly Options**: Use monthly options only
+  - **Focus on Liquid Strikes**: High OI/volume strikes only (from option chain data)
+  - **Quick Exits**: Exit positions faster than normal
+  - **Time-based Pauses**: Pause trading during known volatile hours (9:15-9:30, 2:30-3:30)
+  - **Circuit Breaker**: Stop trading if losses exceed 2% of capital
+  - **Margin Monitoring**: Use Kite API to check available margin
+
+## 5. Timeframe Selection & Strategy Analysis
+
+- **Timeframe Selection:**
+  - Choose appropriate timeframe (1min, 5min, 15min, 1hr, daily)
+  - Match timeframe to strategy type (scalping, swing, positional)
+  - Consider option expiry timeline vs strategy duration
+  - **High Volatility Actions:**
+    - Switch to lower timeframes (15min → 5min, 1hr → 15min)
+    - Reduce position sizes by 50%
+    - **Dynamic Risk-Reward:**
+      - Tight stop-loss levels (0.5-1% of underlying)
+      - Big dynamic targets (2-5x risk or more)
+      - Trail stop-loss as price moves favorably
+      - Scale out positions at multiple target levels
+    - Avoid weekly options (use monthly only)
+    - Focus on ATM options (better liquidity)
+    - Reduce number of concurrent positions
+- **Strategy Analysis:**
+  - Run technical indicators on underlying
+  - Calculate option pricing models
+  - Identify high-probability setups
+  - **Timeframe Hierarchy:**
+    - **Trend Confirmation (Higher Timeframe):**
+      - Daily chart for overall trend direction
+      - 1-hour chart for intermediate trend
+      - 15-minute chart for short-term trend
+    - **Entry/Exit (Lower Timeframe):**
+      - 5-minute chart for precise entries
+      - 1-minute chart for scalping entries
+      - Match trading timeframe to strategy type
+  - **CE vs PE Selection:**
+    - **Buy CE (Call Options) when:**
+      - Bullish trend confirmed on higher timeframe
+      - Support level holding strong on 15min/1hr
+      - Volume increasing on up moves
+      - RSI oversold and turning up on 5min
+      - Breakout above resistance levels
+    - **Buy PE (Put Options) when:**
+      - Bearish trend confirmed on higher timeframe
+      - Resistance level holding strong on 15min/1hr
+      - Volume increasing on down moves
+      - RSI overbought and turning down on 5min
+      - Breakdown below support levels
+    - **Avoid both when:**
+      - Sideways/consolidation market
+      - Low volatility environment
+      - No clear trend direction
+  - Generate buy/sell signals
+
+## 6. Risk Assessment
+
+- Calculate position sizing
+- Check maximum drawdown limits
+- Verify available margin
+- Assess portfolio exposure
+- Monitor delivery margins for stock options
+
+## 7. Order Placement & Safety
+
+- **Order Generation:**
+  - Generate option orders (buy/sell calls/puts)
+  - Set appropriate limit prices
+  - Create unique order IDs for idempotency
+  - Validate order parameters before submission
+- **Order Safety Measures:**
+  - **Idempotent Order IDs**: Use unique order IDs to prevent duplicates
+    - Generate UUID-based order IDs
+    - Store order ID mapping in database
+    - Check for existing orders before retry
+  - **Order Verification Process**:
+    - **Place Order**: Submit order via Kite API
+    - **Get Order ID**: Store returned order ID
+    - **Verify Fill**: Check order book for execution confirmation
+    - **Status Validation**: Verify order status (COMPLETE, REJECTED, PENDING)
+    - **Position Update**: Update position only after confirmed fill
+  - **Auto-Cancel Logic**:
+    - **Pending Order Timeout**: Auto-cancel after 30-60 seconds
+    - **Market Hours Check**: Cancel all pending orders at 3:25 PM
+    - **Volatility Check**: Cancel orders if VIX spikes >5 points
+    - **Price Movement Check**: Cancel if underlying moves >1% from order price
+  - **Order Retry Strategy**:
+    - **Exponential Backoff**: Retry with increasing delays (1s, 2s, 4s)
+    - **Max Retries**: Limit to 3 retry attempts
+    - **Error Handling**: Log and handle API errors gracefully
+    - **Duplicate Prevention**: Check existing orders before retry
+- **Order Execution Confirmation:**
+  - Place orders through broker API
+  - Verify order placement success
+  - Monitor order status via WebSocket
+  - Confirm execution via order book
+  - Update position tracking
+
+## 8. Position Monitoring
+
+- Track open positions in real-time
+- Monitor P&L changes
+- Update stop-loss levels
+- Check for early exit conditions
+- Close stock options before expiry to avoid delivery
+
+## 9. Risk Management
+
+- Execute stop-loss orders
+- Adjust position sizes
+- Hedge delta exposure if needed
+- Close positions at expiry
+- Handle settlement differences (cash vs physical)
+
+## 10. Performance Tracking
+
+- Log all trades and outcomes
+- Calculate daily/weekly P&L
+- Track win rate and average returns
+- Generate performance reports
+
+## 11. Error Handling & Data Management
+
+- Monitor for API failures
+- Handle network disconnections
+- Manage order rejections
+- Implement circuit breakers
+- **Missing Data Handling:**
+  - If token not found in CSV/API, use cached database
+  - If cached data is stale (>7 days), skip trading that token
+  - If no data available, use broker's instrument list API
+  - Fallback to manual token list if all else fails
+  - Log all missing tokens for manual review
+- **Data Validation:**
+  - Check token age (last updated timestamp)
+  - Verify token is still active and tradeable
+  - Cross-reference with broker's live instrument list
+  - Update database with any new information found
+
+## 12. System Shutdown
+
+- Close all open positions
+- Save trading logs
+- Update performance metrics
+- Prepare for next trading session
