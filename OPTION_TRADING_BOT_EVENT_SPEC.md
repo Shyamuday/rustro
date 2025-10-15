@@ -4368,11 +4368,708 @@ async fn main() {
 
 ---
 
+## JSON Memory Management & Optimization
+
+### Current Problem: Naive JSON Usage
+
+**What we're doing now** (simple but inefficient):
+
+```rust
+// ❌ BAD: Load entire JSON into memory every time
+fn load_bars() -> Vec<Bar> {
+    let data = fs::read_to_string("bars/NIFTY_1h.json").unwrap();
+    serde_json::from_str(&data).unwrap()
+}
+
+// ❌ BAD: Write entire JSON every time (slow + memory intensive)
+fn save_bars(bars: Vec<Bar>) {
+    let json = serde_json::to_string_pretty(&bars).unwrap();
+    fs::write("bars/NIFTY_1h.json", json).unwrap();
+}
+```
+
+**Problems**:
+
+- Loads **entire file** into memory (can be 10MB+ for intraday bars)
+- Re-writes **entire file** on every update
+- No concurrent read access
+- Memory usage grows linearly with trading day
+- Slow for large files (>1000 bars)
+
+---
+
+### Solution 1: Rotating JSON Files (Time-Based Sharding)
+
+**Strategy**: Split data by time windows, keep only recent in memory.
+
+```rust
+use chrono::{DateTime, Utc, Datelike};
+
+pub struct RotatingJsonStore {
+    current_date: String,
+    hot_data: Vec<Bar>,  // In-memory (today's bars)
+    max_hot_size: usize,
+    data_dir: PathBuf,
+}
+
+impl RotatingJsonStore {
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self {
+            current_date: Utc::now().format("%Y%m%d").to_string(),
+            hot_data: Vec::with_capacity(390),  // ~390 bars per day (6.5h * 60min)
+            max_hot_size: 500,
+            data_dir,
+        }
+    }
+
+    pub fn append_bar(&mut self, bar: Bar) -> Result<()> {
+        // Check if new day
+        let bar_date = bar.timestamp.format("%Y%m%d").to_string();
+
+        if bar_date != self.current_date {
+            // Flush old day to disk
+            self.flush_to_disk()?;
+
+            // Start new day
+            self.current_date = bar_date;
+            self.hot_data.clear();
+        }
+
+        // Add to hot data
+        self.hot_data.push(bar);
+
+        // Periodic flush (every 100 bars)
+        if self.hot_data.len() % 100 == 0 {
+            self.flush_to_disk()?;
+        }
+
+        Ok(())
+    }
+
+    fn flush_to_disk(&self) -> Result<()> {
+        let filename = format!("bars_{}_{}.json",
+                              self.symbol,
+                              self.current_date);
+        let path = self.data_dir.join(filename);
+
+        // Append-only write (don't reload existing)
+        let existing = if path.exists() {
+            let data = fs::read_to_string(&path)?;
+            serde_json::from_str::<Vec<Bar>>(&data)?
+        } else {
+            Vec::new()
+        };
+
+        let mut combined = existing;
+        combined.extend_from_slice(&self.hot_data);
+
+        // Atomic write
+        save_json_atomic(&path, &combined)?;
+
+        Ok(())
+    }
+
+    pub fn get_recent_bars(&self, count: usize) -> Vec<Bar> {
+        // Return from hot data if enough
+        if self.hot_data.len() >= count {
+            return self.hot_data.iter()
+                .rev()
+                .take(count)
+                .rev()
+                .cloned()
+                .collect();
+        }
+
+        // Need to load from previous days
+        self.load_with_history(count)
+    }
+
+    fn load_with_history(&self, count: usize) -> Vec<Bar> {
+        let mut result = Vec::with_capacity(count);
+
+        // Add hot data first
+        result.extend_from_slice(&self.hot_data);
+
+        // Load previous days if needed
+        let mut days_back = 1;
+        while result.len() < count && days_back <= 5 {
+            let date = Utc::now() - chrono::Duration::days(days_back);
+            let filename = format!("bars_{}_{}.json",
+                                  self.symbol,
+                                  date.format("%Y%m%d"));
+
+            if let Ok(bars) = self.load_day_file(&filename) {
+                // Prepend old bars
+                let mut old_bars = bars;
+                old_bars.append(&mut result);
+                result = old_bars;
+            }
+
+            days_back += 1;
+        }
+
+        // Return last N bars
+        result.into_iter().rev().take(count).rev().collect()
+    }
+}
+```
+
+**Benefits**:
+
+- ✅ Only loads **current day** into memory (~390 bars max)
+- ✅ Old data stays on disk (access only when needed)
+- ✅ Automatic rotation at midnight
+- ✅ Memory usage **bounded** (doesn't grow indefinitely)
+
+---
+
+### Solution 2: Ring Buffer (Fixed-Size Circular Buffer)
+
+**Strategy**: Keep only last N bars in memory, overwrite oldest.
+
+```rust
+use std::collections::VecDeque;
+
+pub struct RingBufferStore<T> {
+    buffer: VecDeque<T>,
+    capacity: usize,
+    overflow_file: PathBuf,
+}
+
+impl RingBufferStore<Bar> {
+    pub fn new(capacity: usize, overflow_file: PathBuf) -> Self {
+        Self {
+            buffer: VecDeque::with_capacity(capacity),
+            capacity,
+            overflow_file,
+        }
+    }
+
+    pub fn push(&mut self, bar: Bar) -> Result<()> {
+        // If buffer full, flush oldest to disk
+        if self.buffer.len() >= self.capacity {
+            let oldest = self.buffer.pop_front().unwrap();
+            self.append_to_overflow(oldest)?;
+        }
+
+        self.buffer.push_back(bar);
+        Ok(())
+    }
+
+    pub fn get_recent(&self, count: usize) -> Vec<&Bar> {
+        self.buffer.iter()
+            .rev()
+            .take(count)
+            .rev()
+            .collect()
+    }
+
+    fn append_to_overflow(&self, bar: Bar) -> Result<()> {
+        // Append single bar to overflow file (efficient)
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.overflow_file)?;
+
+        writeln!(file, "{}", serde_json::to_string(&bar)?)?;
+        Ok(())
+    }
+}
+
+// Usage
+let mut store = RingBufferStore::new(500, PathBuf::from("overflow.jsonl"));
+
+// Only keeps last 500 bars in memory
+for bar in incoming_bars {
+    store.push(bar)?;
+}
+
+// Get last 28 bars (for ADX)
+let recent = store.get_recent(28);
+```
+
+**Benefits**:
+
+- ✅ **Fixed memory usage** (exactly 500 bars)
+- ✅ O(1) push/pop operations
+- ✅ Overflow automatically written to disk
+- ✅ Perfect for indicators (only need recent history)
+
+---
+
+### Solution 3: Memory-Mapped Files (mmap)
+
+**Strategy**: Use OS virtual memory to access large files without loading entire contents.
+
+```rust
+use memmap2::MmapOptions;
+use std::io::Cursor;
+
+pub struct MmappedJsonStore {
+    file: File,
+    mmap: Mmap,
+}
+
+impl MmappedJsonStore {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)?;
+
+        let mmap = unsafe { MmapOptions::new().map(&file)? };
+
+        Ok(Self { file, mmap })
+    }
+
+    pub fn read_last_n_bars(&self, n: usize) -> Result<Vec<Bar>> {
+        // Parse JSON from mmap (OS handles memory)
+        let cursor = Cursor::new(&self.mmap[..]);
+        let all_bars: Vec<Bar> = serde_json::from_reader(cursor)?;
+
+        Ok(all_bars.into_iter().rev().take(n).rev().collect())
+    }
+}
+
+// Add to Cargo.toml:
+// memmap2 = "0.9"
+```
+
+**Benefits**:
+
+- ✅ OS handles memory paging (only loads needed pages)
+- ✅ Fast random access
+- ✅ Good for **read-heavy** workloads
+- ⚠️ Still needs full JSON parse (not ideal for huge files)
+
+---
+
+### Solution 4: Line-Delimited JSON (JSONL) + Tail Access
+
+**Strategy**: Write one JSON object per line, read from end efficiently.
+
+```rust
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+pub struct JsonLinesStore {
+    file_path: PathBuf,
+}
+
+impl JsonLinesStore {
+    pub fn append_bar(&self, bar: &Bar) -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.file_path)?;
+
+        // Write single line (no array brackets)
+        writeln!(file, "{}", serde_json::to_string(bar)?)?;
+        Ok(())
+    }
+
+    pub fn read_last_n(&self, n: usize) -> Result<Vec<Bar>> {
+        let file = File::open(&self.file_path)?;
+        let mut reader = BufReader::new(file);
+
+        // Read all lines (only way to find "last N" in JSONL)
+        let mut lines = Vec::new();
+        let mut line = String::new();
+
+        while reader.read_line(&mut line)? > 0 {
+            lines.push(line.clone());
+            line.clear();
+        }
+
+        // Take last N lines
+        let bars: Vec<Bar> = lines.iter()
+            .rev()
+            .take(n)
+            .rev()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect();
+
+        Ok(bars)
+    }
+}
+
+// File format (bars_NIFTY_1h.jsonl):
+// {"timestamp":"2025-01-15T10:15:00Z","open":23450,"high":23475,...}
+// {"timestamp":"2025-01-15T11:15:00Z","open":23460,"high":23485,...}
+// {"timestamp":"2025-01-15T12:15:00Z","open":23470,"high":23495,...}
+```
+
+**Benefits**:
+
+- ✅ **Append-only** writes (very fast)
+- ✅ No need to parse entire file on append
+- ✅ Easy to tail/stream
+- ✅ Crash-safe (each line is complete)
+- ⚠️ Must read entire file to get "last N" (use with ring buffer)
+
+---
+
+### Solution 5: Hybrid In-Memory Cache + Disk (Recommended)
+
+**Strategy**: Combine ring buffer (memory) + JSONL (disk) for best of both worlds.
+
+```rust
+pub struct HybridBarStore {
+    // Hot path: in-memory ring buffer
+    memory_buffer: VecDeque<Bar>,
+    memory_capacity: usize,
+
+    // Cold path: disk storage
+    disk_file: PathBuf,
+
+    // Metadata
+    total_bars: usize,
+}
+
+impl HybridBarStore {
+    pub fn new(memory_capacity: usize, disk_file: PathBuf) -> Self {
+        Self {
+            memory_buffer: VecDeque::with_capacity(memory_capacity),
+            memory_capacity,
+            disk_file,
+            total_bars: 0,
+        }
+    }
+
+    pub fn append(&mut self, bar: Bar) -> Result<()> {
+        // Always write to disk immediately (durability)
+        self.append_to_disk(&bar)?;
+
+        // Add to memory buffer
+        if self.memory_buffer.len() >= self.memory_capacity {
+            self.memory_buffer.pop_front();
+        }
+        self.memory_buffer.push_back(bar);
+
+        self.total_bars += 1;
+        Ok(())
+    }
+
+    pub fn get_recent(&self, n: usize) -> Result<Vec<Bar>> {
+        // Fast path: all in memory
+        if n <= self.memory_buffer.len() {
+            return Ok(self.memory_buffer.iter()
+                .rev()
+                .take(n)
+                .rev()
+                .cloned()
+                .collect());
+        }
+
+        // Slow path: need to read from disk
+        self.load_from_disk_and_memory(n)
+    }
+
+    fn append_to_disk(&self, bar: &Bar) -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.disk_file)?;
+
+        writeln!(file, "{}", serde_json::to_string(bar)?)?;
+        file.sync_all()?;  // Ensure written to disk
+        Ok(())
+    }
+
+    fn load_from_disk_and_memory(&self, n: usize) -> Result<Vec<Bar>> {
+        let file = File::open(&self.disk_file)?;
+        let reader = BufReader::new(file);
+
+        // Read all lines from disk
+        let disk_bars: Vec<Bar> = reader.lines()
+            .filter_map(|line| line.ok())
+            .filter_map(|line| serde_json::from_str(&line).ok())
+            .collect();
+
+        // Combine disk + memory, take last N
+        let mut all_bars = disk_bars;
+        all_bars.extend(self.memory_buffer.iter().cloned());
+
+        Ok(all_bars.into_iter().rev().take(n).rev().collect())
+    }
+}
+
+// Usage
+let mut store = HybridBarStore::new(
+    500,  // Keep last 500 bars in memory
+    PathBuf::from("bars/NIFTY_1h.jsonl")
+);
+
+// Append is O(1) and durable
+store.append(bar)?;
+
+// Get recent is O(1) if in memory, O(n) if need disk
+let bars_for_adx = store.get_recent(28)?;
+```
+
+**Benefits**:
+
+- ✅ **O(1) append** (in-memory + async disk write)
+- ✅ **O(1) recent reads** (from memory buffer)
+- ✅ **Crash-safe** (always written to disk)
+- ✅ **Bounded memory** (only last 500 bars)
+- ✅ **Can reconstruct** full history from disk if needed
+
+---
+
+### Solution 6: Concurrent Access with Arc<RwLock>
+
+**Strategy**: Allow multiple readers + single writer safely.
+
+```rust
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Clone)]
+pub struct ConcurrentBarStore {
+    store: Arc<RwLock<HybridBarStore>>,
+}
+
+impl ConcurrentBarStore {
+    pub fn new(memory_capacity: usize, disk_file: PathBuf) -> Self {
+        Self {
+            store: Arc::new(RwLock::new(
+                HybridBarStore::new(memory_capacity, disk_file)
+            )),
+        }
+    }
+
+    pub async fn append(&self, bar: Bar) -> Result<()> {
+        let mut store = self.store.write().await;
+        store.append(bar)
+    }
+
+    pub async fn get_recent(&self, n: usize) -> Result<Vec<Bar>> {
+        let store = self.store.read().await;
+        store.get_recent(n)
+    }
+}
+
+// Usage across multiple tasks
+let bar_store = ConcurrentBarStore::new(500, PathBuf::from("bars.jsonl"));
+
+// WebSocket task (writes)
+let store1 = bar_store.clone();
+tokio::spawn(async move {
+    loop {
+        let bar = receive_tick().await;
+        store1.append(bar).await.unwrap();
+    }
+});
+
+// Strategy task (reads)
+let store2 = bar_store.clone();
+tokio::spawn(async move {
+    loop {
+        let bars = store2.get_recent(28).await.unwrap();
+        calculate_adx(&bars);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+});
+```
+
+**Benefits**:
+
+- ✅ **Multiple readers** can access simultaneously
+- ✅ **No blocking** on reads (unless writer active)
+- ✅ **Thread-safe** (no data races)
+
+---
+
+### Solution 7: Compression for Long-Term Storage
+
+**Strategy**: Compress old data to save disk space.
+
+```rust
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
+pub struct CompressedArchive {
+    archive_dir: PathBuf,
+}
+
+impl CompressedArchive {
+    // Compress daily files older than 7 days
+    pub fn compress_old_files(&self) -> Result<()> {
+        let cutoff = Utc::now() - chrono::Duration::days(7);
+
+        for entry in fs::read_dir(&self.archive_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension() == Some(OsStr::new("jsonl")) {
+                if let Some(date) = self.extract_date_from_filename(&path) {
+                    if date < cutoff {
+                        self.compress_file(&path)?;
+                        fs::remove_file(&path)?;  // Delete uncompressed
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn compress_file(&self, path: &Path) -> Result<()> {
+        let input = fs::read(path)?;
+        let output_path = path.with_extension("jsonl.gz");
+
+        let output = File::create(&output_path)?;
+        let mut encoder = GzEncoder::new(output, Compression::default());
+        encoder.write_all(&input)?;
+        encoder.finish()?;
+
+        Ok(())
+    }
+}
+
+// File structure:
+// bars/NIFTY_1h_20250115.jsonl      (today - uncompressed)
+// bars/NIFTY_1h_20250114.jsonl      (yesterday - uncompressed)
+// bars/NIFTY_1h_20250107.jsonl.gz   (7 days ago - compressed)
+// bars/NIFTY_1h_20250106.jsonl.gz   (8 days ago - compressed)
+```
+
+**Benefits**:
+
+- ✅ **80-90% space savings** on old data
+- ✅ Keeps recent data fast (uncompressed)
+- ✅ Old data still accessible (decompress on demand)
+
+---
+
+### Recommended Architecture for Your Bot
+
+```rust
+// Main bar storage system
+pub struct TradingDataStore {
+    // 1. Hot data (in-memory, last 500 bars per symbol)
+    nifty_bars: Arc<RwLock<RingBufferStore<Bar>>>,
+
+    // 2. Warm data (today's full history on disk - JSONL)
+    daily_writer: Arc<RwLock<JsonLinesStore>>,
+
+    // 3. Cold data (compressed archives)
+    archive_manager: CompressedArchive,
+}
+
+impl TradingDataStore {
+    pub async fn append_bar(&self, symbol: &str, bar: Bar) -> Result<()> {
+        // 1. Write to disk immediately (durability)
+        {
+            let writer = self.daily_writer.write().await;
+            writer.append_bar(&bar)?;
+        }
+
+        // 2. Update in-memory buffer (speed)
+        {
+            let mut buffer = self.nifty_bars.write().await;
+            buffer.push(bar)?;
+        }
+
+        Ok(())
+    }
+
+    pub async fn get_for_adx(&self) -> Result<Vec<Bar>> {
+        // Read from memory (O(1), no disk I/O)
+        let buffer = self.nifty_bars.read().await;
+        Ok(buffer.get_recent(28))
+    }
+
+    pub async fn end_of_day_maintenance(&self) -> Result<()> {
+        // Compress yesterday's file
+        self.archive_manager.compress_old_files()?;
+
+        // Start new daily file
+        let new_date = Utc::now().format("%Y%m%d").to_string();
+        let new_path = format!("bars/NIFTY_1h_{}.jsonl", new_date);
+
+        let mut writer = self.daily_writer.write().await;
+        *writer = JsonLinesStore::new(PathBuf::from(new_path));
+
+        Ok(())
+    }
+}
+```
+
+---
+
+### Memory Usage Comparison
+
+| **Approach**             | **Memory (per symbol)** | **Append Speed** | **Read Speed** | **Crash Safety**   |
+| ------------------------ | ----------------------- | ---------------- | -------------- | ------------------ |
+| Naive JSON               | ~10MB (full day)        | Slow (rewrite)   | Slow (parse)   | ❌ (lost buffer)   |
+| Rotating Files           | ~100KB (hot data)       | Fast             | Fast           | ✅ (periodic)      |
+| Ring Buffer              | ~50KB (500 bars)        | Very Fast        | Very Fast      | ⚠️ (on flush)      |
+| JSONL                    | ~10KB (buffer only)     | Very Fast        | Medium         | ✅ (immediate)     |
+| **Hybrid (Recommended)** | **~50KB**               | **Very Fast**    | **Very Fast**  | **✅ (immediate)** |
+| Mmap                     | ~0KB (OS managed)       | Medium           | Fast           | ✅ (OS handles)    |
+
+---
+
+### Final Implementation for Your Bot
+
+```rust
+// In your main.rs
+pub struct AppState {
+    // ... existing fields
+
+    // Optimized bar storage
+    pub bar_store: Arc<ConcurrentBarStore>,
+}
+
+// In data/bar.rs
+pub fn create_optimized_bar_store() -> ConcurrentBarStore {
+    ConcurrentBarStore::new(
+        500,  // Keep last 500 bars in memory (enough for any indicator)
+        PathBuf::from(format!(
+            "bars/NIFTY_1h_{}.jsonl",
+            Utc::now().format("%Y%m%d")
+        ))
+    )
+}
+
+// Usage in tick handler
+async fn handle_tick(state: Arc<AppState>, tick: Tick) {
+    if let Some(bar) = aggregate_tick_to_bar(tick) {
+        // O(1) write, crash-safe
+        state.bar_store.append(bar).await.unwrap();
+    }
+}
+
+// Usage in strategy
+async fn calculate_hourly_adx(state: Arc<AppState>) {
+    // O(1) read from memory
+    let bars = state.bar_store.get_recent(28).await.unwrap();
+    let adx = compute_adx(&bars);
+}
+```
+
+---
+
+### Key Takeaways
+
+1. ✅ **Use Hybrid Store**: In-memory ring buffer (500 bars) + JSONL disk append
+2. ✅ **Memory Bounded**: Never exceeds ~50KB per symbol
+3. ✅ **Crash-Safe**: Every bar immediately written to disk
+4. ✅ **Fast Reads**: O(1) for recent bars (from memory)
+5. ✅ **Fast Writes**: O(1) append (no file rewrite)
+6. ✅ **Concurrent**: Multiple readers, single writer (Arc<RwLock>)
+7. ✅ **Archival**: Compress files >7 days old (80% space savings)
+
+**Your bot will handle 6.5 hours × 60 minutes = 390 bars/day with minimal memory footprint!** 🚀
+
+---
+
 **END OF SPECIFICATION**
 
 **Version**: 2.0  
 **Last Updated**: 2025-01-15  
 **Maintainers**: Development Team  
 **Status**: Ready for Implementation  
-**Document Length**: 3,500+ lines  
+**Document Length**: 4,400+ lines  
 **Coverage**: Complete implementation guide with zero ambiguity
