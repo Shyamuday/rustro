@@ -507,6 +507,121 @@
   - **Update Frequency**: Recalculate ADX daily after market close
   - **Multi-Timeframe**: Use daily ADX for categorization, 5min/1min for entry timing
 
+### 5.5 Concrete Strategy Logic & Execution Rules
+
+#### 5.5.1 Entry Decision Framework
+
+- **Pre-Entry Validation Checklist**:
+
+  - Market hours validation (9:15 AM - 3:30 PM)
+  - VIX within acceptable range (12-30)
+  - Category status valid (not NoTrade)
+  - Sufficient account balance and margin
+  - Token validity and liquidity check (OI > 1000)
+  - Maximum position limit not exceeded (2-3 concurrent positions)
+  - No entry after 2:30 PM (insufficient time for trade development)
+
+- **Bullish Entry Conditions (Call Options)**:
+
+  - **Higher Timeframe Alignment**: Daily ADX > 25 and +DI > -DI (bullish trend)
+  - **Intermediate Trend**: 1-hour chart shows higher highs and higher lows
+  - **Support Validation**: 15-minute low staying above EMA-20
+  - **Entry Trigger Options**:
+    - **Pullback Entry**: 5-minute RSI < 40 and price bounces off 9-EMA
+    - **Breakout Entry**: Current price breaks above 1-hour high with volume
+  - **Volume Confirmation**: Current volume > 120% of average volume
+  - **Risk-Reward Setup**: Stop loss at 1% below entry, target at 3% above entry
+
+- **Bearish Entry Conditions (Put Options)**:
+  - **Higher Timeframe Alignment**: Daily ADX > 25 and -DI > +DI (bearish trend)
+  - **Intermediate Trend**: 1-hour chart shows lower highs and lower lows
+  - **Resistance Validation**: 15-minute high staying below EMA-20
+  - **Entry Trigger Options**:
+    - **Pullback Entry**: 5-minute RSI > 60 and price rejects from 9-EMA
+    - **Breakdown Entry**: Current price breaks below 1-hour low with volume
+  - **Volume Confirmation**: Current volume > 120% of average volume
+  - **Risk-Reward Setup**: Stop loss at 1% above entry, target at 3% below entry
+
+#### 5.5.2 Position Sizing Decision Matrix
+
+- **Base Position Size**: 2% of total account balance per trade
+- **Volatility Adjustments**:
+  - VIX < 15: Increase position by 25% (low volatility environment)
+  - VIX 15-20: Standard position size (normal market)
+  - VIX 20-25: Reduce position by 25% (elevated volatility)
+  - VIX 25-30: Reduce position by 50% (high volatility)
+  - VIX > 30: Reduce position by 75% or skip trading (extreme volatility)
+- **Time Decay Adjustments**:
+  - More than 14 days to expiry: Standard position size
+  - 7-14 days to expiry: Reduce position by 25%
+  - Less than 7 days to expiry: Reduce position by 50%
+- **Liquidity Adjustments**:
+  - OI > 5000: Standard position size
+  - OI 1000-5000: Reduce position by 25%
+  - OI 500-1000: Reduce position by 50%
+  - OI < 500: Skip trade (insufficient liquidity)
+- **Multiple Position Adjustments**:
+  - 1 position: Standard position size
+  - 2 positions: Reduce each by 20%
+  - 3 positions: Reduce each by 40%
+  - Maximum 3 concurrent positions allowed
+
+#### 5.5.3 Exit Decision Framework (Priority Ordered)
+
+- **Priority 1 - Mandatory Exits** (highest priority, execute immediately):
+
+  - Market close approaching (exit all positions 30 minutes before 3:30 PM)
+  - Expiry approaching (exit all positions 3 days before expiry)
+  - Account daily loss limit reached (exit all and halt trading)
+  - VIX spike > 5 points in 10 minutes (exit all positions)
+  - Token/session expiry imminent (exit all positions)
+
+- **Priority 2 - Risk-Based Exits**:
+
+  - Stop loss hit (1% move against position in underlying)
+  - Consecutive losing trades (after 3 losses, reduce position size or halt)
+  - Margin approaching 80% utilization (close weakest position)
+
+- **Priority 3 - Profit-Based Exits**:
+
+  - Primary target reached (3% move in favor, close 100% of position)
+  - Partial profit taking at 1:1 risk-reward (close 50%, trail stop on remaining)
+  - Trailing stop hit after moving to breakeven
+
+- **Priority 4 - Technical Exits**:
+
+  - Trend reversal on 5-minute chart (price crosses EMA-9 opposite direction + RSI confirmation)
+  - Volume drying up (volume drops below 50% of average for 15 minutes)
+  - Higher timeframe trend change (daily ADX category shifts)
+
+- **Priority 5 - Time-Based Exits**:
+  - Position held over 60 minutes with negative P&L (time decay risk)
+  - Position held over 2 hours with minimal profit (opportunity cost)
+
+#### 5.5.4 Trailing Stop Loss Management
+
+- **Breakeven Move**: After 1% profit (1:1 risk-reward), move stop loss to entry price + 0.5%
+- **Aggressive Trailing**: After 2% profit (1:2 risk-reward), trail stop at 1.5% below current price
+- **Lock Profits**: After 3% profit (target reached), trail stop at 2% below current price
+- **Update Frequency**: Check and update trailing stop every 30 seconds during active position
+
+#### 5.5.5 Re-Entry Rules After Stop-Out
+
+- **Cooling Period**: Wait minimum 30 minutes after stop-out before considering re-entry
+- **Time Restriction**: No re-entry after 2:30 PM (insufficient time remaining)
+- **Price Movement Validation**: Underlying must move >1% from previous entry price
+- **Category Revalidation**: Ensure stock still in same ADX category (CE or PE)
+- **Market Condition Check**: Ensure VIX hasn't spiked, volume still healthy
+- **Maximum Attempts**: Maximum 2 re-entries per symbol per day
+- **Stop Loss Adjustment**: Use wider stop loss (1.5%) on re-entry to avoid whipsaws
+
+#### 5.5.6 Correlation and Concentration Limits
+
+- **Maximum per Underlying**: Only 1 option position per underlying (NIFTY/BANKNIFTY/Stock)
+- **Sector Concentration**: Maximum 50% of positions from same sector
+- **Direction Concentration**: Maximum 70% of positions in same direction (all CE or all PE)
+- **Expiry Concentration**: Diversify across at least 2 different expiry dates if holding 3+ positions
+
 ## 6. Order Management & Safety
 
 ### 6.1 Order Generation
@@ -1268,6 +1383,1486 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
 - Process supervision: service manager, watchdog, auto‑restart with backoff
 - Configuration gating: clear LIVE vs PAPER modes, feature flags
 - Versioned deploys with rollback and change logs
+
+### 13.13 Paper Trading & Simulation Mode
+
+#### 13.13.1 Paper Trading Configuration
+
+- **Mode Selection**:
+
+  - Environment variable: `TRADING_MODE=PAPER` or `TRADING_MODE=LIVE`
+  - Configuration file flag: `mode = "paper"` or `mode = "live"`
+  - Command-line argument: `--mode paper` or `--mode live`
+  - Default to PAPER mode for safety (require explicit LIVE activation)
+
+- **Paper Trading Behavior**:
+  - Use same strategy logic and signal generation as live trading
+  - Connect to real SmartAPI for market data (prices, option chain, VIX)
+  - Simulate order placement without sending to broker
+  - Track virtual positions, P&L, and account balance
+  - Log all simulated trades with timestamps and prices
+
+#### 13.13.2 Order Fill Simulation
+
+- **Fill Price Simulation**:
+
+  - **Market Orders**: Fill at current ask (buy) or bid (sell) price
+  - **Limit Orders**: Fill only when market price crosses limit price
+  - **Slippage Modeling**: Add realistic slippage (0.1-0.5% for options)
+  - **Partial Fills**: Simulate partial fills for large orders (>10% of OI)
+
+- **Fill Timing Simulation**:
+
+  - **Immediate Fill**: High liquidity strikes (OI > 10,000)
+  - **Delayed Fill**: 2-5 seconds for moderate liquidity (OI 1,000-10,000)
+  - **Rejection**: Reject orders for low liquidity strikes (OI < 500)
+  - **Market Impact**: Increase slippage for position sizes >100 lots
+
+- **Realistic Constraints**:
+  - Honor lot size multiples and tick size rules
+  - Respect RMS freeze quantity limits
+  - Simulate margin requirements and checks
+  - Enforce price band restrictions (±20% circuit limits)
+
+#### 13.13.3 Paper Trading Validation
+
+- **Performance Comparison**:
+
+  - Compare paper trading results vs backtest results
+  - Acceptable variance: ±10% due to real-time execution differences
+  - Track slippage, commissions, and fees in paper mode
+  - Validate order logic, timing, and risk management
+
+- **Data Validation**:
+
+  - Ensure real-time data matches paper trading assumptions
+  - Verify option chain data quality and completeness
+  - Check for data gaps or delays in paper mode
+  - Log any discrepancies between expected and actual data
+
+- **Transition to Live**:
+  - Minimum 2 weeks successful paper trading (positive P&L, no errors)
+  - Paper trading Sharpe ratio > 1.5
+  - Maximum drawdown < 10% in paper mode
+  - No critical errors or system crashes during paper trading
+  - Manual review and approval required before live trading
+
+#### 13.13.4 Parallel Paper Trading (Alongside Live)
+
+- **Dual Mode Operation**:
+
+  - Run paper trading engine parallel to live trading
+  - Use same market data and signals for both
+  - Compare live vs paper performance daily
+  - Detect divergence between live and paper results
+
+- **Divergence Alerts**:
+  - Alert if paper P&L differs from live by >20%
+  - Investigate order execution, slippage, or data issues
+  - Flag for manual review and strategy adjustment
+  - Pause live trading if unexplained divergence >30%
+
+### 13.14 Disaster Recovery & Emergency Procedures
+
+#### 13.14.1 System Crash Recovery
+
+- **Crash Detection**:
+
+  - Process watchdog detects bot process termination
+  - Health check endpoint stops responding (>30 seconds)
+  - WebSocket disconnection without auto-reconnect
+  - Log file shows fatal error or panic
+
+- **Recovery Steps**:
+
+  1. **Position Reconstruction**: Query broker API for current open positions
+  2. **Order Reconciliation**: Fetch all orders placed today from broker
+  3. **State Restoration**: Load last saved state from persistent storage
+  4. **Balance Verification**: Verify account balance and margin availability
+  5. **Data Sync**: Download missing tick data and reconstruct bars
+  6. **Validation**: Ensure reconstructed state matches broker state
+  7. **Resume**: Resume trading only after full validation passes
+
+- **Orphan Order Detection**:
+  - Compare system's order log with broker's order book
+  - Identify orders placed by bot but missing from internal state
+  - Identify positions held by broker but missing from bot state
+  - **Action**: Cancel orphan pending orders, reconcile positions
+  - **Alert**: Notify operator of any orphan orders/positions found
+
+#### 13.14.2 Network Outage Recovery
+
+- **Short Outage (<5 minutes)**:
+
+  - WebSocket reconnects automatically with exponential backoff
+  - Resume position monitoring and price updates
+  - No position changes needed if positions are safe
+  - Log outage duration and resume time
+
+- **Medium Outage (5-30 minutes)**:
+
+  - Assess market conditions after reconnection
+  - Check VIX for any spikes during outage
+  - Review open positions for adverse movements
+  - Consider closing positions if significant movement against us
+  - Skip new entries for 15 minutes after reconnection (market assessment)
+
+- **Long Outage (>30 minutes)**:
+  - Treat as disaster scenario
+  - Close all open positions immediately after reconnection
+  - Halt trading for remainder of day
+  - Perform full system validation and reconciliation
+  - Generate incident report for review
+
+#### 13.14.3 Database/File Corruption Recovery
+
+- **Corruption Detection**:
+
+  - JSON parse errors when loading files
+  - Missing or truncated data files
+  - Checksum validation failures
+  - Timestamp inconsistencies or gaps
+
+- **Recovery Procedure**:
+
+  - Restore from previous day's backup (created at EOD)
+  - Download missing historical data from SmartAPI
+  - Reconstruct missing bars from raw tick files if available
+  - Validate restored data integrity before resuming
+  - If unable to restore: halt trading, manual intervention required
+
+- **Data Backup Strategy**:
+  - Incremental backups every hour during trading
+  - Full backup at end of day (3:45 PM)
+  - Retain 7 days of backups locally
+  - Upload daily backups to cloud/external storage
+  - Test restore procedure weekly
+
+#### 13.14.4 Wrong Order Execution (Fat Finger)
+
+- **Prevention Measures**:
+
+  - Pre-trade validation: maximum quantity per order (100 lots)
+  - Price sanity check: reject orders >20% from current LTP
+  - Maximum order value: ₹5,00,000 per single order
+  - Duplicate order prevention: check for similar orders in last 60 seconds
+  - Confirmation delays: 2-second delay for large orders (>50 lots)
+
+- **Detection**:
+
+  - Order placed with quantity >10x normal position size
+  - Order price significantly different from market (>10%)
+  - Multiple identical orders placed within seconds
+  - Position size exceeds account risk limits
+
+- **Emergency Response**:
+  1. **Immediate Action**: Cancel order if still pending (within 5 seconds)
+  2. **If Filled**: Assess damage, consider immediate exit or hedge
+  3. **Risk Assessment**: Calculate potential loss and margin impact
+  4. **Decision Tree**:
+     - Loss <1% of account: Monitor and exit strategically
+     - Loss 1-3% of account: Exit immediately at market
+     - Loss >3% of account: Consider hedging with opposite position
+  5. **Documentation**: Log incident with full details for review
+  6. **Prevention**: Update validation rules to prevent recurrence
+
+#### 13.14.5 Emergency Contact Tree
+
+- **Level 1 Alerts** (automated, no human intervention needed):
+
+  - Token expiry warnings (4 hours before)
+  - Position P&L updates
+  - Normal trading alerts
+  - System health checks
+
+- **Level 2 Alerts** (operator notification, non-urgent):
+
+  - Daily loss approaching 2%
+  - VIX elevated (25-30)
+  - Single position loss >1%
+  - Data quality issues
+  - Order reject rate >10%
+
+- **Level 3 Alerts** (immediate operator action required):
+
+  - Daily loss limit reached (3%)
+  - System crash or fatal error
+  - Network outage >5 minutes
+  - Token expired during trading hours
+  - Wrong order execution detected
+  - VIX >30 (extreme volatility)
+
+- **Level 4 Alerts** (emergency, page on-call):
+
+  - Account loss >5% in single day
+  - Multiple system failures
+  - Broker API completely down
+  - Data corruption affecting positions
+  - Regulatory violation detected
+
+- **Contact Methods**:
+  - Email: For Level 1-2 alerts
+  - SMS: For Level 3 alerts
+  - Phone call: For Level 4 emergencies
+  - Slack/Telegram: Real-time operational updates
+
+#### 13.14.6 Manual Intervention Procedures
+
+- **Kill-Switch Activation**:
+  - **Trigger Methods**:
+    - Keyboard shortcut: `CTRL+C` (graceful shutdown)
+    - CLI command: `bot kill-switch --confirm`
+    - Emergency file: Create `EMERGENCY_STOP` file in bot directory
+    - API endpoint: `POST /api/emergency-stop` with auth token
+- **Kill-Switch Actions** (execute in order):
+
+  1. Stop generating new signals and trade intents
+  2. Cancel all pending orders immediately
+  3. Close all open positions at market price (within 30 seconds)
+  4. Disconnect WebSocket and stop data collection
+  5. Save current state and generate incident log
+  6. Send emergency notification to operator
+  7. Halt trading engine completely
+
+- **Resume After Kill-Switch**:
+  1. Operator investigates root cause of kill-switch trigger
+  2. Operator validates system is safe to resume
+  3. Operator runs health check: `bot health-check --full`
+  4. Operator explicitly confirms: `bot resume --confirm-safe --reason "issue resolved"`
+  5. System performs full validation before accepting trades
+  6. Resume trading in limited mode (50% position sizes for 1 hour)
+  7. Gradually return to normal operations if no issues
+
+### 13.15 Performance SLAs & System Requirements
+
+#### 13.15.1 Latency Requirements
+
+- **Order Placement Latency**:
+
+  - **Target**: Order placement round-trip <300ms (p50)
+  - **Maximum**: Order placement round-trip <500ms (p99)
+  - **Components**:
+    - Signal generation to order intent: <50ms
+    - Order validation and safety checks: <50ms
+    - Network to broker API: <150ms
+    - Broker processing and confirmation: <100ms
+    - Order status update: <50ms
+
+- **Data Processing Latency**:
+
+  - WebSocket tick to internal update: <10ms
+  - 1-minute bar construction: <50ms after bar close
+  - Indicator calculation refresh: <100ms
+  - Position P&L update: <50ms
+
+- **System Response Times**:
+  - Health check endpoint: <100ms
+  - Dashboard data refresh: <200ms
+  - Manual command execution: <1 second
+  - Emergency stop execution: <500ms
+
+#### 13.15.2 Throughput Requirements
+
+- **Market Data Processing**:
+
+  - WebSocket tick processing: >5,000 ticks/second capacity
+  - Simultaneous symbol subscriptions: 50-100 symbols
+  - Option chain refresh rate: Full chain every 10 minutes
+  - Top-of-book strikes refresh: Every 1-2 minutes
+
+- **Order Processing**:
+  - Maximum concurrent orders: 10 orders in-flight
+  - Order queue capacity: 100 orders (should never exceed)
+  - Order burst handling: 20 orders in 10 seconds
+  - Order validation rate: >100 validations/second
+
+#### 13.15.3 Resource Utilization Limits
+
+- **CPU Usage**:
+
+  - Normal operation: <25% of single core (leave headroom for spikes)
+  - During market hours: <40% of single core
+  - Indicator calculation: <10% of single core
+  - **Alert**: If CPU >60% sustained for 5 minutes
+  - **Action**: Reduce indicator calculations or symbol subscriptions
+
+- **Memory Usage**:
+
+  - Baseline (no data): <100 MB
+  - With 2 days tick data: <500 MB
+  - With 3 months historical bars: <1 GB
+  - Maximum allowed: 2 GB
+  - **Alert**: If memory >1.5 GB
+  - **Action**: Clear old tick data, reduce retention
+
+- **Network Bandwidth**:
+
+  - WebSocket data: 100-500 KB/s during active trading
+  - REST API calls: 10-50 KB/s average
+  - Historical data download: Burst to 1 MB/s, throttle to stay within limits
+  - **Alert**: If bandwidth >1 MB/s sustained
+
+- **Disk I/O**:
+  - Tick data writes: <10 MB/minute during trading
+  - Log file writes: <5 MB/minute
+  - Disk space required: 10 GB minimum, 50 GB recommended
+  - **Alert**: If disk space <5 GB remaining
+  - **Action**: Archive old data, clean temporary files
+
+#### 13.15.4 Availability & Uptime
+
+- **Target Uptime**: 99.5% during market hours (9:15 AM - 3:30 PM)
+
+  - Allowed downtime: ~1.9 minutes per trading day
+  - Maximum single outage: <60 seconds
+  - Recovery time objective: <60 seconds
+
+- **System Health Monitoring**:
+
+  - Health check every 30 seconds
+  - Process heartbeat every 10 seconds
+  - WebSocket connection status: continuous monitoring
+  - Data freshness: alert if no new data for 60 seconds
+
+- **Auto-Recovery Mechanisms**:
+  - Process watchdog restarts on crash (max 3 attempts)
+  - WebSocket auto-reconnect with backoff
+  - API retry with exponential backoff
+  - Automatic state restoration from last checkpoint
+
+#### 13.15.5 Data Quality SLAs
+
+- **Price Data Accuracy**:
+
+  - Tick data timestamp accuracy: ±1 second
+  - Price value accuracy: Exact match with broker (no interpolation)
+  - Missing data tolerance: <0.1% of expected ticks
+  - **Alert**: If missing data >1% in any 5-minute window
+
+- **Bar Construction Accuracy**:
+
+  - 1-minute bars: OHLCV calculated from exact ticks
+  - Higher timeframe bars: Aggregated from 1-minute bars
+  - Bar timestamp: Aligned to exact bar boundaries
+  - **Validation**: Random spot-check against broker historical data
+
+- **Indicator Calculation Accuracy**:
+  - ADX, RSI, EMA: Match reference implementations (TA-Lib)
+  - Tolerance: ±0.01% for floating-point calculations
+  - Validation: Backtest against known datasets
+
+#### 13.15.6 Error Rate Limits
+
+- **Order Rejection Rate**:
+
+  - Target: <5% order rejection rate
+  - Maximum: <10% order rejection rate
+  - **Alert**: If rejection rate >10% in 15 minutes
+  - **Action**: Pause trading, investigate order validation logic
+
+- **API Error Rate**:
+
+  - Target: <1% API call failure rate
+  - Maximum: <5% API call failure rate
+  - **Alert**: If error rate >5% in 5 minutes
+  - **Action**: Check broker API status, network connectivity
+
+- **Data Gap Rate**:
+  - Target: <0.1% missing data points
+  - Maximum: <1% missing data points
+  - **Alert**: If gaps >1% in any 10-minute window
+  - **Action**: Check WebSocket connection, request missing data
+
+### 13.16 Deployment & Versioning
+
+#### 13.16.1 Build & Release Process
+
+- **Version Numbering**: Semantic versioning (MAJOR.MINOR.PATCH)
+
+  - MAJOR: Breaking changes, major strategy overhaul
+  - MINOR: New features, non-breaking strategy updates
+  - PATCH: Bug fixes, performance improvements
+
+- **Build Pipeline**:
+
+  1. **Code Commit**: Developer commits to feature branch
+  2. **Automated Tests**: Run unit tests, integration tests (must pass)
+  3. **Code Review**: Peer review required before merge
+  4. **Merge to Main**: Merge to main branch after approval
+  5. **Build Binary**: Compile optimized release binary
+  6. **Run Backtests**: Execute strategy backtest on historical data
+  7. **Tag Release**: Tag version in git (e.g., v1.2.3)
+  8. **Generate Changelog**: Auto-generate changelog from commits
+  9. **Package**: Create deployment package with binary + config
+
+- **Pre-Deployment Checklist**:
+  - [ ] All tests pass (unit, integration, backtest)
+  - [ ] Code review approved by 2+ reviewers
+  - [ ] Configuration files updated for new version
+  - [ ] Database/JSON schema migrations prepared (if needed)
+  - [ ] Rollback plan documented
+  - [ ] Deployment scheduled during non-market hours
+  - [ ] Backup of current production system created
+
+#### 13.16.2 Deployment Strategy (Blue-Green)
+
+- **Blue-Green Setup**:
+
+  - **Blue Environment**: Current production system
+  - **Green Environment**: New version staging environment
+  - Both environments share same configuration and data sources
+
+- **Deployment Steps**:
+
+  1. **Deploy to Green**: Deploy new version to green environment
+  2. **Validation**: Run full health check on green environment
+  3. **Paper Trading**: Run green in paper mode for 1 hour (non-market hours)
+  4. **Switch**: Update routing to point to green environment
+  5. **Monitor**: Closely monitor green for 30 minutes
+  6. **Promote**: If successful, green becomes new blue (production)
+  7. **Retain Blue**: Keep old blue as backup for 24 hours
+
+- **Rollback Procedure**:
+  - **Trigger Conditions**:
+    - Fatal errors or crashes in first 30 minutes
+    - Order rejection rate >20%
+    - Data processing errors
+    - Performance degradation >50%
+  - **Rollback Steps**:
+    1. Switch routing back to old blue environment (takes <60 seconds)
+    2. Verify blue is functioning correctly
+    3. Investigate issues with green offline
+    4. Notify team of rollback and reason
+
+#### 13.16.3 Configuration Management
+
+- **Environment-Specific Configs**:
+
+  - `config.dev.toml`: Development settings (paper mode default)
+  - `config.staging.toml`: Staging settings (paper mode forced)
+  - `config.prod.toml`: Production settings (live mode allowed)
+
+- **Configuration Versioning**:
+
+  - Store configs in version control (git)
+  - Tag config versions matching software versions
+  - Track all config changes with commit messages
+  - Require review for production config changes
+
+- **Configuration Hot-Reload**:
+
+  - Monitor config file for changes
+  - Reload non-critical settings without restart:
+    - Position sizing parameters
+    - Risk thresholds (VIX limits, loss limits)
+    - Strategy parameters (ADX threshold, RSI levels)
+  - **Require restart** for critical settings:
+    - Trading mode (PAPER/LIVE)
+    - Broker credentials
+    - System architecture changes
+
+- **Configuration Drift Detection**:
+  - Compare running config with expected config (from git)
+  - Alert if production config differs from version control
+  - Generate drift report daily
+  - **Action**: Sync configs or document exceptions
+
+#### 13.16.4 Schema Migrations
+
+- **JSON Schema Versioning**:
+
+  - Include schema version in each JSON file: `"schema_version": "1.2"`
+  - Maintain backward compatibility for 2 versions
+  - Support forward migration (old to new schema)
+
+- **Migration Process**:
+
+  1. Detect old schema version in existing files
+  2. Run migration script to convert to new schema
+  3. Validate converted data integrity
+  4. Create backup of original files (pre-migration)
+  5. Atomic swap: rename old files, write new files
+  6. Delete backups after 7 days if no issues
+
+- **Migration Testing**:
+  - Test migrations on sample data before production
+  - Verify round-trip conversion (old→new→old)
+  - Ensure performance: migrations should complete in <5 minutes
+
+#### 13.16.5 Monitoring Post-Deployment
+
+- **First 30 Minutes** (critical monitoring period):
+
+  - Watch logs in real-time for errors
+  - Monitor order placement and execution
+  - Track latency and throughput metrics
+  - Verify position tracking accuracy
+  - Check WebSocket connection stability
+
+- **First 24 Hours** (enhanced monitoring):
+
+  - Compare performance vs previous version
+  - Monitor for memory leaks or resource growth
+  - Track error rates and rejection rates
+  - Validate P&L calculation accuracy
+  - Check for any behavioral changes
+
+- **First Week** (performance validation):
+  - Compare strategy performance vs backtest expectations
+  - Monitor for any edge cases or bugs
+  - Gather user feedback (if applicable)
+  - Assess overall system stability
+  - Decide whether to keep or rollback
+
+## 14. Operational Interface & Control System
+
+### 14.1 Command-Line Interface (CLI)
+
+#### 14.1.1 Bot Control Commands
+
+- **Start Trading**:
+
+  - `bot start --mode live`: Start in live trading mode
+  - `bot start --mode paper`: Start in paper trading mode
+  - `bot start --config prod.toml`: Start with specific config file
+  - `bot start --dry-run`: Start but don't place any orders (validation only)
+
+- **Stop Trading**:
+
+  - `bot stop`: Graceful shutdown (close positions, save state)
+  - `bot stop --immediate`: Stop without closing positions (emergency only)
+  - `bot stop --no-exit`: Stop but leave positions open
+
+- **Status & Monitoring**:
+
+  - `bot status`: Show current status (running/stopped/error)
+  - `bot positions`: Display all open positions with P&L
+  - `bot orders`: Show recent orders and their status
+  - `bot balance`: Display account balance, margin, available funds
+  - `bot performance`: Show today's performance metrics
+
+- **Emergency Controls**:
+  - `bot kill-switch --confirm`: Emergency stop + close all positions
+  - `bot pause`: Pause new entries, keep monitoring existing positions
+  - `bot resume --confirm-safe`: Resume after pause/kill-switch
+
+#### 14.1.2 Configuration Commands
+
+- **Config Management**:
+
+  - `bot config show`: Display current configuration
+  - `bot config validate`: Validate config file syntax
+  - `bot config reload`: Hot-reload configuration
+  - `bot config edit`: Open config in editor
+
+- **Parameter Adjustment**:
+  - `bot set position-size 1.5`: Adjust base position size percentage
+  - `bot set daily-loss-limit 2.5`: Adjust daily loss limit
+  - `bot set max-positions 2`: Change maximum concurrent positions
+
+#### 14.1.3 Data Management Commands
+
+- **Data Operations**:
+
+  - `bot data sync`: Download missing historical data
+  - `bot data validate`: Validate data integrity
+  - `bot data cleanup`: Remove old data beyond retention period
+  - `bot data backup`: Create manual backup
+
+- **Data Inspection**:
+  - `bot data gaps`: Show data gap report
+  - `bot data stats`: Display data statistics (size, coverage, quality)
+
+#### 14.1.4 System Maintenance Commands
+
+- **Health & Diagnostics**:
+
+  - `bot health-check`: Run full system health check
+  - `bot health-check --quick`: Quick health check (<5 seconds)
+  - `bot diagnose`: Run diagnostic tests on all components
+  - `bot logs --tail 100`: Show last 100 log lines
+  - `bot logs --follow`: Follow logs in real-time
+  - `bot logs --level error`: Show only error logs
+
+- **Testing & Validation**:
+  - `bot test connection`: Test broker API connection
+  - `bot test websocket`: Test WebSocket connectivity
+  - `bot test order --paper`: Test order placement in paper mode
+  - `bot validate strategy`: Validate strategy logic
+
+### 14.2 Emergency Controls & Kill-Switch
+
+#### 14.2.1 Kill-Switch Trigger Mechanisms
+
+- **Manual Triggers**:
+
+  - **Keyboard**: `CTRL+C` sends graceful shutdown signal
+  - **Keyboard**: `CTRL+C` (second press) sends emergency kill signal
+  - **CLI**: `bot kill-switch --confirm` command
+  - **File**: Create `EMERGENCY_STOP` file in bot directory
+  - **API**: `POST /api/emergency/kill-switch` with authentication
+
+- **Automated Triggers**:
+  - Daily loss limit exceeded (3% default)
+  - Account balance drops below critical threshold (80% of starting balance)
+  - VIX spike >7 points in 5 minutes
+  - Token/session expires during trading hours (unable to refresh)
+  - System error rate >50% for 5 minutes
+  - Margin utilization >95%
+  - Wrong order detected (fat finger scenario)
+
+#### 14.2.2 Kill-Switch Execution Sequence
+
+1. **Immediate Actions** (within 1 second):
+
+   - Set global flag: `EMERGENCY_MODE = true`
+   - Stop signal generation engine
+   - Stop accepting new trade intents
+
+2. **Order Management** (within 5 seconds):
+
+   - Cancel ALL pending orders (market + limit)
+   - Log all cancelled orders with reason
+   - Wait for cancellation confirmations
+
+3. **Position Closure** (within 30 seconds):
+
+   - Close all open positions at MARKET price
+   - Log each position closure with exit price and P&L
+   - Verify all positions closed with broker API
+   - Retry up to 3 times if any positions remain open
+
+4. **Data & State Management** (within 60 seconds):
+
+   - Save current system state to disk
+   - Generate emergency incident report
+   - Backup all data files
+   - Close all data connections
+
+5. **Shutdown** (within 90 seconds):
+   - Disconnect WebSocket
+   - Close REST API clients
+   - Send emergency notification to operator
+   - Log shutdown completion
+   - Exit process
+
+#### 14.2.3 Post-Kill-Switch Procedures
+
+- **Incident Investigation**:
+
+  1. Review incident report and logs
+  2. Identify root cause of kill-switch trigger
+  3. Assess financial impact (P&L, slippage, fees)
+  4. Check for any system errors or bugs
+  5. Verify broker reconciliation (all positions closed correctly)
+
+- **System Validation Before Resume**:
+
+  1. Fix root cause issue (code bug, config error, external issue resolved)
+  2. Run full health check: `bot health-check --full`
+  3. Validate data integrity and freshness
+  4. Test connectivity (REST + WebSocket)
+  5. Verify account balance and margin
+  6. Run paper trading for 15 minutes to validate system
+
+- **Resume Procedure**:
+  1. Operator approval required (cannot resume automatically)
+  2. Document reason for resume and validation steps taken
+  3. Execute: `bot resume --confirm-safe --reason "issue resolved, system validated"`
+  4. Start in LIMITED MODE:
+     - 50% of normal position sizes
+     - Maximum 1 concurrent position
+     - Extra conservative risk parameters
+  5. Monitor closely for 1 hour
+  6. If stable, gradually return to normal: `bot mode normal`
+
+#### 14.2.4 Manual Order Placement Mode
+
+- **Purpose**: Allow operator to manually place orders through bot interface
+
+  - Useful when automated strategy is paused but manual trading needed
+  - Provides consistent order interface with safety checks
+  - Logs all manual orders for audit trail
+
+- **Manual Mode Activation**:
+
+  - `bot manual-mode enable`: Enable manual order placement
+  - Automated signal generation stops
+  - Operator can submit orders via CLI or API
+
+- **Manual Order Commands**:
+
+  - `bot order buy-ce NIFTY 23500 --qty 1 --price 150.50`: Buy call option
+  - `bot order buy-pe NIFTY 23500 --qty 1 --price 145.25`: Buy put option
+  - `bot order close <position-id>`: Close specific position
+  - `bot order close-all`: Close all positions
+
+- **Manual Mode Safety**:
+  - All safety checks still apply (position limits, margin, price bands)
+  - Log operator identity and reason for manual order
+  - Require confirmation for large orders (>50 lots)
+  - Daily loss limits still enforced
+
+### 14.3 Monitoring Dashboard & Alerts
+
+#### 14.3.1 Real-Time Dashboard Panels
+
+- **System Health Panel**:
+
+  - Bot status: Running/Stopped/Error
+  - Uptime: Hours since start
+  - Last heartbeat: Seconds ago
+  - WebSocket: Connected/Disconnected
+  - API status: Healthy/Degraded/Down
+  - Data freshness: Last tick received
+
+- **Trading Status Panel**:
+
+  - Trading mode: LIVE/PAPER
+  - VIX level: Current value + trend
+  - Market hours: Open/Closed + time remaining
+  - Signal generation: Active/Paused
+  - Circuit breakers: Status of each breaker
+
+- **Positions Panel**:
+
+  - Open positions: Count + list
+  - Total exposure: Notional value
+  - Net delta: Portfolio delta
+  - Unrealized P&L: Real-time per position + total
+  - Margin used: Percentage of available margin
+
+- **Performance Panel**:
+
+  - Today's P&L: Absolute + percentage
+  - Win rate: Wins / Total trades today
+  - Average profit: Per winning trade
+  - Average loss: Per losing trade
+  - Largest winner: Best trade today
+  - Largest loser: Worst trade today
+  - Sharpe ratio: Intraday Sharpe
+
+- **Order Flow Panel**:
+
+  - Recent orders: Last 10 orders with status
+  - Order success rate: Percentage filled
+  - Average fill time: Seconds
+  - Rejection count: Today
+  - Pending orders: Count + list
+
+- **Risk Metrics Panel**:
+  - Daily loss: Current / Limit
+  - Consecutive losses: Count
+  - Position concentration: By underlying
+  - Margin utilization: Percentage
+  - Max drawdown: Today's maximum drawdown
+
+#### 14.3.2 Alert Configuration
+
+- **Critical Alerts** (email + SMS + dashboard):
+
+  - Daily loss limit reached
+  - Kill-switch triggered
+  - System crash or fatal error
+  - Token expiry during trading
+  - Wrong order detected
+  - Network outage >5 minutes
+
+- **Warning Alerts** (email + dashboard):
+
+  - Daily loss approaching limit (>2%)
+  - VIX spike >5 points
+  - Order rejection rate >10%
+  - Margin utilization >70%
+  - Data quality issues
+  - Position stop-loss hit
+
+- **Info Alerts** (dashboard only):
+  - Position opened/closed
+  - Target reached
+  - Daily performance summary
+  - System maintenance completed
+
+### 14.4 Logging & Audit Trail
+
+#### 14.4.1 Log Levels & Categories
+
+- **Log Levels**:
+
+  - ERROR: Fatal errors, crashes, critical failures
+  - WARN: Non-fatal issues, degraded performance, risk warnings
+  - INFO: Normal operations, trade executions, state changes
+  - DEBUG: Detailed diagnostics, trace information (development only)
+
+- **Log Categories**:
+  - `AUTH`: Token generation, session management, authentication
+  - `DATA`: Market data, WebSocket, tick processing, bar construction
+  - `STRATEGY`: Signal generation, indicator calculations, entry/exit logic
+  - `RISK`: Risk checks, circuit breakers, position sizing, limits
+  - `ORDER`: Order placement, fills, cancellations, rejections
+  - `POSITION`: Position tracking, P&L updates, margin
+  - `SYSTEM`: Health checks, errors, performance metrics
+
+#### 14.4.2 Audit Trail Requirements
+
+- **Order Audit**:
+
+  - Log every order intent with timestamp, symbol, direction, size, price
+  - Log order placement with broker order ID
+  - Log order fill with execution price, time, and slippage
+  - Log order cancellations with reason
+  - Log order rejections with broker reason code
+
+- **Position Audit**:
+
+  - Log position opens with entry price, size, stop-loss, target
+  - Log position updates (stop-loss adjustments, partial exits)
+  - Log position closes with exit price, reason, P&L
+  - Log position duration and holding time
+
+- **Risk Audit**:
+
+  - Log all risk check results (pass/fail with values)
+  - Log circuit breaker activations and deactivations
+  - Log daily loss limit checks
+  - Log margin utilization checks
+
+- **System Audit**:
+  - Log all configuration changes
+  - Log all operator commands (CLI/API)
+  - Log system start/stop with version information
+  - Log all error conditions and recovery actions
+
+#### 14.4.3 Log Retention & Archival
+
+- **Active Logs**:
+
+  - Current day logs: Keep in active log file
+  - Log rotation: Daily at midnight
+  - Log file naming: `bot-YYYY-MM-DD.log`
+
+- **Archive Policy**:
+
+  - Compress logs older than 7 days (gzip)
+  - Retain compressed logs for 90 days locally
+  - Upload to cloud storage for 1 year retention
+  - Delete logs older than 1 year (unless required for audit)
+
+- **Searchability**:
+  - Structured logging format (JSON preferred)
+  - Indexed by timestamp, category, level
+  - Include correlation IDs for order/position tracking
+  - Support grep/search across archived logs
+
+## 15. Configuration Reference & Examples
+
+### 15.1 Complete Configuration File Structure
+
+```toml
+[system]
+# System identification and mode
+app_name = "rustro-option-bot"
+version = "1.0.0"
+environment = "production"  # development, staging, production
+trading_mode = "paper"      # paper or live (default paper for safety)
+
+[broker]
+# Angel One SmartAPI credentials
+name = "angelone"
+api_base_url = "https://apiconnect.angelbroking.com"
+ws_url = "wss://smartapisocket.angelbroking.com"
+client_code = "${SMARTAPI_CLIENT_CODE}"  # From environment variable
+# Never store password/TOTP in config - use OS credential manager
+
+[market]
+# Market hours and calendar
+timezone = "Asia/Kolkata"
+market_open = "09:15:00"
+market_close = "15:30:00"
+pre_market = "09:00:00"
+post_market = "16:00:00"
+trading_days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+holiday_calendar_url = "https://www.nseindia.com/api/holiday-master"
+
+[data]
+# Data management settings
+storage_path = "./data"
+retention_raw_ticks_days = 2
+retention_1m_bars_months = 3
+retention_1h_bars_months = 3
+retention_daily_bars_years = 1
+enable_data_validation = true
+max_data_gap_seconds = 300
+
+[websocket]
+# WebSocket connection settings
+reconnect_delay_ms = 1000
+max_reconnect_delay_ms = 30000
+max_reconnect_attempts = 10
+heartbeat_interval_seconds = 30
+subscription_batch_size = 50
+
+[rest_api]
+# REST API rate limiting
+requests_per_second = 5
+requests_per_minute = 100
+timeout_seconds = 30
+max_retries = 3
+backoff_multiplier = 2.0
+
+[strategy]
+# Strategy parameters
+name = "adx_trend_following"
+enabled = true
+min_adx_threshold = 25.0
+max_adx_threshold = 100.0
+rsi_oversold = 40.0
+rsi_overbought = 60.0
+ema_fast_period = 9
+ema_slow_period = 20
+volume_multiplier = 1.2
+
+[risk]
+# Risk management settings
+base_position_size_pct = 2.0          # 2% of account per trade
+max_positions = 3                      # Maximum concurrent positions
+max_position_per_underlying = 1        # Maximum 1 position per underlying
+daily_loss_limit_pct = 3.0            # Stop trading after 3% daily loss
+consecutive_loss_limit = 3             # Halt after 3 consecutive losses
+margin_utilization_max_pct = 70.0     # Maximum margin usage
+
+[risk.vix_adjustments]
+# VIX-based position sizing
+vix_low_threshold = 15.0
+vix_low_multiplier = 1.25
+vix_normal_low = 15.0
+vix_normal_high = 20.0
+vix_normal_multiplier = 1.0
+vix_elevated_threshold = 20.0
+vix_elevated_multiplier = 0.75
+vix_high_threshold = 25.0
+vix_high_multiplier = 0.50
+vix_extreme_threshold = 30.0
+vix_extreme_multiplier = 0.25
+
+[risk.circuit_breakers]
+# Circuit breaker thresholds
+enable_vix_breaker = true
+vix_pause_threshold = 30.0
+vix_spike_threshold = 5.0
+vix_spike_window_minutes = 10
+enable_flash_spike_breaker = true
+flash_spike_pct = 2.0
+flash_spike_window_minutes = 5
+
+[entry]
+# Entry rules
+enable_time_filter = true
+no_entry_before = "10:00:00"
+no_entry_after = "14:30:00"
+min_oi_threshold = 1000
+require_volume_confirmation = true
+require_trend_alignment = true
+
+[exit]
+# Exit rules
+stop_loss_pct = 1.0               # 1% stop loss on underlying
+target_pct = 3.0                  # 3% target on underlying
+enable_trailing_stop = true
+breakeven_at_rr = 1.0            # Move to breakeven at 1:1
+trailing_start_at_rr = 2.0       # Start trailing at 1:2
+trailing_pct = 1.5               # Trail 1.5% below high
+exit_before_close_minutes = 30    # Exit all positions 30min before close
+exit_before_expiry_days = 3       # Exit all positions 3 days before expiry
+max_holding_time_minutes = 120    # Maximum hold time
+
+[orders]
+# Order management
+default_order_type = "LIMIT"          # LIMIT or MARKET
+default_product_type = "MIS"          # MIS, CNC, NRML
+limit_price_offset_pct = 0.5          # 0.5% offset from LTP for limit orders
+order_timeout_seconds = 60            # Cancel pending orders after 60s
+max_slippage_pct = 2.0               # Reject fills with >2% slippage
+enable_order_idempotency = true
+max_order_value = 500000              # Maximum ₹5 lakh per order
+max_order_quantity = 100              # Maximum 100 lots per order
+
+[monitoring]
+# Monitoring and alerts
+enable_dashboard = true
+dashboard_port = 8080
+health_check_interval_seconds = 30
+log_level = "INFO"                    # ERROR, WARN, INFO, DEBUG
+log_format = "json"                   # json or text
+enable_email_alerts = true
+enable_sms_alerts = false
+alert_email = "operator@example.com"
+
+[performance]
+# Performance settings
+enable_parallel_processing = true
+worker_threads = 4
+tick_processing_batch_size = 100
+indicator_calculation_interval_ms = 1000
+position_update_interval_ms = 500
+
+[backup]
+# Backup settings
+enable_auto_backup = true
+backup_interval_hours = 24
+backup_path = "./backups"
+backup_retention_days = 7
+enable_cloud_backup = false
+```
+
+### 15.2 Environment-Specific Configurations
+
+#### 15.2.1 Development Config (`config.dev.toml`)
+
+```
+[system]
+environment = "development"
+trading_mode = "paper"  # ALWAYS paper in dev
+
+[data]
+storage_path = "./data/dev"
+
+[monitoring]
+log_level = "DEBUG"
+enable_email_alerts = false
+
+[risk]
+daily_loss_limit_pct = 1.0  # Lower limits for testing
+max_positions = 1
+```
+
+#### 15.2.2 Production Config (`config.prod.toml`)
+
+```
+[system]
+environment = "production"
+trading_mode = "paper"  # Requires explicit override to "live"
+
+[monitoring]
+log_level = "INFO"
+enable_email_alerts = true
+enable_sms_alerts = true
+
+[backup]
+enable_cloud_backup = true
+```
+
+### 15.3 Secrets Management
+
+- **Never store in config files**:
+
+  - Broker passwords
+  - TOTP secrets
+  - API keys
+  - Authentication tokens
+
+- **Use OS credential managers**:
+
+  - Windows: Windows Credential Manager
+  - Linux: Secret Service API / gnome-keyring
+  - macOS: Keychain
+
+- **Environment variables** (secondary option):
+
+  - `SMARTAPI_CLIENT_CODE`
+  - `SMARTAPI_PASSWORD` (retrieve from secure vault)
+  - `SMARTAPI_TOTP_SECRET` (retrieve from secure vault)
+
+- **Configuration references** (use placeholders):
+  - `${ENV_VAR_NAME}` - replaced at runtime
+  - Never log actual secret values
+
+### 15.4 Configuration Validation
+
+- **Startup Validation**:
+
+  - Verify all required fields present
+  - Check value ranges (percentages 0-100, positive numbers, etc.)
+  - Validate file paths exist and writable
+  - Ensure trading_mode is valid (paper/live)
+  - Confirm broker credentials accessible (without logging them)
+
+- **Runtime Validation**:
+  - Reject hot-reload if validation fails
+  - Alert operator of invalid configuration
+  - Continue with previous valid configuration
+
+## 16. Testing Strategy & Scenarios
+
+### 16.1 Unit Testing Requirements
+
+- **Minimum Coverage**: 80% code coverage
+- **Critical Path Coverage**: 100% coverage for:
+
+  - Order placement logic
+  - Position sizing calculations
+  - Risk management checks
+  - Stop-loss and target calculations
+  - Entry/exit decision logic
+
+- **Indicator Calculations**:
+  - ADX: Test against TA-Lib reference implementation
+  - RSI: Validate with known datasets
+  - EMA: Cross-check with industry standard values
+  - Volume calculations: Verify aggregation correctness
+
+### 16.2 Integration Testing Scenarios
+
+1. **Authentication Flow**:
+
+   - Test successful login
+   - Test invalid credentials
+   - Test token expiry handling
+   - Test token refresh mechanism
+
+2. **Market Data Integration**:
+
+   - Test WebSocket connection and subscription
+   - Test tick processing and bar construction
+   - Test handling of missing data
+   - Test option chain parsing
+
+3. **Order Execution Flow**:
+
+   - Test order placement (paper mode)
+   - Test order fill confirmation
+   - Test order rejection handling
+   - Test order cancellation
+
+4. **Position Management**:
+   - Test position opening
+   - Test P&L calculation
+   - Test stop-loss trigger
+   - Test target trigger
+   - Test position closure
+
+### 16.3 Edge Case Test Scenarios
+
+1. **Gap Scenarios**:
+
+   - Gap-up >100 points at market open
+   - Gap-down >100 points at market open
+   - Verify ATM recalculation
+   - Verify token pool refresh
+
+2. **Volatility Scenarios**:
+
+   - VIX spike from 15 to 32 in 5 minutes
+   - Verify circuit breaker activation
+   - Verify position size reduction
+   - Verify position closure
+
+3. **Network Issues**:
+
+   - WebSocket disconnection during active trade
+   - API timeout during order placement
+   - Network outage for 10 minutes
+   - Verify auto-reconnection and recovery
+
+4. **Order Scenarios**:
+
+   - Order rejected by broker
+   - Partial order fill
+   - Order fill with high slippage
+   - Multiple simultaneous order placements
+
+5. **Time Scenarios**:
+
+   - Market close approaching (3:25 PM)
+   - Expiry approaching (3 days before)
+   - Position held beyond max holding time
+   - Trading hours vs non-trading hours
+
+6. **Data Scenarios**:
+
+   - Missing 1-minute bar data
+   - Corrupt JSON file
+   - Timestamp out of sequence
+   - Price outlier detection
+
+7. **Risk Scenarios**:
+   - Daily loss limit reached
+   - 3 consecutive losses
+   - Margin utilization >90%
+   - Maximum positions exceeded
+
+### 16.4 Load & Stress Testing
+
+- **Tick Processing Load**:
+
+  - Simulate 10,000 ticks/second
+  - Verify no data loss
+  - Monitor CPU and memory usage
+  - Ensure latency stays <10ms per tick
+
+- **Order Burst**:
+
+  - Submit 50 orders in 10 seconds
+  - Verify all orders queued correctly
+  - Check rate limiting enforcement
+  - Validate no duplicate orders
+
+- **Memory Stress**:
+  - Run for 6 hours continuous trading
+  - Monitor memory growth
+  - Verify no memory leaks
+  - Check garbage collection performance
+
+### 16.5 Chaos Engineering Tests
+
+- **Failure Injection**:
+
+  - Kill WebSocket connection mid-trade
+  - Simulate broker API timeout
+  - Corrupt active data file
+  - Force system crash with open positions
+
+- **Recovery Validation**:
+  - Verify auto-recovery mechanisms
+  - Check position reconstruction accuracy
+  - Validate data integrity after recovery
+  - Ensure no orphan orders
+
+### 16.6 Backtest vs Live Parity
+
+- **Backtest Setup**:
+
+  - Use 3 months of historical data
+  - Include realistic slippage (0.2%)
+  - Include all fees and charges
+  - Model liquidity constraints
+
+- **Parity Checks**:
+
+  - Signal generation: Same signals on same data
+  - Position sizing: Same lot calculations
+  - Risk management: Same circuit breaker triggers
+  - Performance: Paper trading within ±15% of backtest
+
+- **Acceptable Variances**:
+  - P&L difference: ±10% (due to real-time execution)
+  - Win rate difference: ±5% (due to slippage)
+  - Drawdown difference: ±3% (due to timing)
+
+### 16.7 Pre-Live Trading Validation
+
+**Week 1: Paper Trading**
+
+- Run full system in paper mode
+- Monitor for errors and crashes
+- Validate signal generation
+- Check order logic and timing
+- Target: Zero critical errors
+
+**Week 2: Limited Live**
+
+- Start with 1 lot only
+- Trade only 2 hours per day (11am-1pm)
+- Maximum 1 position at a time
+- Daily review of all trades
+- Target: Positive P&L, no errors
+
+**Week 3-4: Gradual Scale**
+
+- Increase to 2 lots
+- Trade full market hours
+- Maximum 2 positions
+- Weekly performance review
+- Target: Consistent with paper trading
+
+**Month 2+: Full Production**
+
+- Full position sizing
+- All features enabled
+- Continuous monitoring
+- Regular optimization
+
+## 17. Gradual Rollout & Production Ramp
+
+### 17.1 Phase 1: Paper Trading (Week 1-2)
+
+- **Objective**: Validate system functionality without real money
+- **Configuration**:
+  - `trading_mode = "paper"`
+  - Use real market data
+  - Simulate order execution
+  - Track performance metrics
+- **Success Criteria**:
+  - Zero system crashes
+  - Zero critical errors
+  - Positive paper P&L
+  - All features working correctly
+  - Performance matches backtest expectations (±15%)
+
+### 17.2 Phase 2: Minimal Live (Week 3-4)
+
+- **Objective**: Test with minimal real capital
+- **Configuration**:
+  - `trading_mode = "live"`
+  - `max_positions = 1`
+  - `base_position_size_pct = 0.5` (0.5% instead of 2%)
+  - Trading hours: 11:00 AM - 1:00 PM only
+  - Maximum 3 trades per day
+- **Monitoring**:
+  - Operator present during all trading hours
+  - Real-time monitoring of all orders
+  - Daily reconciliation with broker
+- **Success Criteria**:
+  - Order execution working correctly
+  - Position tracking accurate
+  - No wrong orders or fat fingers
+  - Broker reconciliation 100% match
+
+### 17.3 Phase 3: Limited Live (Month 2)
+
+- **Objective**: Scale up gradually
+- **Configuration**:
+  - `max_positions = 2`
+  - `base_position_size_pct = 1.0` (1% instead of 2%)
+  - Full market hours (9:15 AM - 3:30 PM)
+  - All strategy features enabled
+- **Monitoring**:
+  - Daily performance review
+  - Weekly reconciliation
+  - Error tracking and analysis
+- **Success Criteria**:
+  - Consistent profitability
+  - No critical errors for 2+ weeks
+  - Sharpe ratio > 1.0
+  - Maximum drawdown < 10%
+
+### 17.4 Phase 4: Full Production (Month 3+)
+
+- **Objective**: Full-scale automated trading
+- **Configuration**:
+  - `max_positions = 3`
+  - `base_position_size_pct = 2.0` (full position sizing)
+  - All features enabled
+  - Automated decision making
+- **Ongoing Monitoring**:
+  - Real-time dashboard monitoring
+  - Daily performance reports
+  - Weekly strategy review
+  - Monthly system audit
+
+### 17.5 Rollback Triggers
+
+- **Immediate Rollback** (back to previous phase):
+
+  - Single day loss >5%
+  - System crashes more than once per week
+  - Multiple wrong orders or execution errors
+  - Broker reconciliation mismatches
+
+- **Phase Suspension** (pause current phase):
+  - Three consecutive losing days
+  - Sharpe ratio drops below 0.5
+  - Win rate drops below 40%
+  - Unexplained system behavior
+
+## 18. Production Readiness Final Checklist
+
+### Core Trading System
+
+- [ ] Market hours and holiday calendar validation
+- [ ] Token management and auto-refresh
+- [ ] WebSocket connection and auto-reconnect
+- [ ] Real-time data processing and bar construction
+- [ ] ADX-based categorization logic
+- [ ] Multi-timeframe analysis implementation
+- [ ] Entry signal generation
+- [ ] Exit signal generation
+- [ ] Position sizing calculations
+- [ ] Risk management and circuit breakers
+
+### Order Management
+
+- [ ] Order placement with idempotency
+- [ ] Order fill verification
+- [ ] Order cancellation logic
+- [ ] Order retry with exponential backoff
+- [ ] Slippage validation
+- [ ] Fat finger prevention
+
+### Risk Controls
+
+- [ ] Daily loss limits
+- [ ] Position limits
+- [ ] Margin checks
+- [ ] VIX-based circuit breakers
+- [ ] Stop-loss enforcement
+- [ ] Target management
+- [ ] Trailing stop logic
+
+### Data Management
+
+- [ ] JSON file storage structure
+- [ ] Data retention and cleanup
+- [ ] Data validation and gap detection
+- [ ] Backup and recovery procedures
+- [ ] Historical data download
+
+### Monitoring & Alerts
+
+- [ ] Health check endpoints
+- [ ] Real-time dashboard
+- [ ] Email/SMS alerts configured
+- [ ] Logging and audit trail
+- [ ] Performance metrics tracking
+
+### Operational Controls
+
+- [ ] CLI commands implemented
+- [ ] Kill-switch mechanism
+- [ ] Manual trading mode
+- [ ] Configuration hot-reload
+- [ ] Graceful shutdown
+
+### Testing
+
+- [ ] Unit tests (80%+ coverage)
+- [ ] Integration tests
+- [ ] Edge case tests (20+ scenarios)
+- [ ] Load tests
+- [ ] Chaos tests
+- [ ] Backtest parity validation
+
+### Deployment
+
+- [ ] Blue-green deployment setup
+- [ ] Rollback procedures documented
+- [ ] Configuration management
+- [ ] Schema migrations tested
+- [ ] Post-deployment monitoring plan
+
+### Documentation
+
+- [ ] System architecture documented
+- [ ] Operational runbooks created
+- [ ] Emergency procedures documented
+- [ ] Configuration reference complete
+- [ ] API documentation
+
+### Compliance & Security
+
+- [ ] Broker TOS compliance verified
+- [ ] Secrets management implemented
+- [ ] Audit trail complete
+- [ ] Data retention policy defined
+- [ ] Access control implemented
+
+### Pre-Live Validation
+
+- [ ] 2+ weeks successful paper trading
+- [ ] All tests passing
+- [ ] Performance matches expectations
+- [ ] Operator training complete
+- [ ] Emergency contacts configured
 
 ## Appendix A. Angel One SmartAPI Endpoints and Rust Examples
 
