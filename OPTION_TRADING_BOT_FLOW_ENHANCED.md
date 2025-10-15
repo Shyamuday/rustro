@@ -655,6 +655,54 @@ Benefits of This Approach:
 
 ```
 
+**ANGEL ONE SmartAPI: Recommended Approach**
+
+```
+
+═══════════════════════════════════════════════════════════
+✅ BEST PRACTICE for Angel One SmartAPI
+═══════════════════════════════════════════════════════════
+
+PRIMARY: REST API for ALL candle data
+SECONDARY: WebSocket for LTP monitoring only
+
+Why This Works Best for Angel One:
+───────────────────────────────────
+
+1. REST API Has Historical Endpoint ✅
+
+   - Endpoint: /rest/secure/angelbroking/historical/v1/getCandleData
+   - Supports: 1h, 1d intervals (we need these)
+   - Rate Limits: 3 req/sec (we use <1 req/hour)
+   - Reliability: 99%+ uptime, no gaps
+   - Data Quality: Official exchange data
+
+2. WebSocket Issues (Common) ⚠️
+
+   - Frequent gaps (as you mentioned)
+   - Disconnection/reconnection delays
+   - Cannot fetch historical ticks after disconnect
+   - Max 100 symbol limit
+
+3. Our Usage is Very Light:
+   - Initial load: 2 API calls (daily + hourly)
+   - Per hour: 1 API call (new candle)
+   - Total: ~8 calls/day (well within limits!)
+
+Implementation for Angel One:
+─────────────────────────────
+
+9:00 AM: Load historical data via REST API
+10:15 AM: Fetch new hourly candle via REST API
+11:15 AM: Fetch new hourly candle via REST API
+... continues every hour
+
+WebSocket: Only for live LTP (stop loss, alerts)
+
+No gaps, no sync issues, 100% reliable! ✅
+
+```
+
 Handling Edge Cases:
 ────────────────────
 
