@@ -9,6 +9,7 @@ pub mod positions;
 pub mod risk;
 pub mod config;
 pub mod utils;
+pub mod time;
 
 pub use types::*;
 pub use error::{Result, TradingError};
