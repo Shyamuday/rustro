@@ -1,0 +1,39 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+
+# Data files
+/data/
+*.jsonl
+*.json
+!config.toml
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Credentials (safety)
+tokens.json
+credentials.json
+
+# Archives
+*.gz
+*.zip
+*.tar
+
