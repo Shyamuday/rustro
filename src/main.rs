@@ -7,16 +7,16 @@ use tracing::{error, info, warn};
 use tracing_subscriber;
 
 use rustro::{
-    broker::{AngelOneClient, TokenManager},
+    broker::{AngelOneClient, AngelWebSocket, InstrumentCache, PaperTradingBroker, TokenManager},
     config::load_config,
-    data::ConcurrentBarStore,
+    data::{ConcurrentBarStore, MultiBarAggregator, Timeframe},
     error::{Result, TradingError},
     events::{Event, EventBus, EventPayload, EventType},
-    orders::OrderManager,
+    orders::{OrderManager, OrderValidator},
     positions::{Position, PositionManager, PositionStatus},
     risk::RiskManager,
     strategy::{indicators::round_to_strike, AdxStrategy, EntrySignal},
-    time::{get_market_timings, is_trading_day},
+    time::{get_market_timings, holidays::is_trading_day as is_trading_day_with_holidays},
     utils::*,
     Bar, Config, Direction, OptionType, Side,
 };
@@ -27,6 +27,11 @@ pub struct TradingApp {
     event_bus: Arc<EventBus>,
     token_manager: Arc<TokenManager>,
     broker_client: Arc<AngelOneClient>,
+    paper_broker: Option<Arc<PaperTradingBroker>>,
+    websocket: Option<Arc<AngelWebSocket>>,
+    bar_aggregator: Arc<MultiBarAggregator>,
+    instrument_cache: Arc<InstrumentCache>,
+    order_validator: Arc<OrderValidator>,
     strategy: Arc<AdxStrategy>,
     order_manager: Arc<OrderManager>,
     position_manager: Arc<PositionManager>,
@@ -38,6 +43,7 @@ pub struct TradingApp {
     
     // State
     session_uuid: String,
+    nifty_token: Arc<RwLock<Option<String>>>,
     daily_analysis_done: Arc<RwLock<bool>>,
     last_hourly_check: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
     shutdown: Arc<RwLock<bool>>,
@@ -80,6 +86,33 @@ impl TradingApp {
             config.angel_one_password.clone(),
             config.angel_one_totp_secret.clone(),
         ));
+        
+        // Create paper trading broker if enabled
+        let paper_broker = if config.enable_paper_trading {
+            info!("📝 Paper trading mode ENABLED");
+            Some(Arc::new(PaperTradingBroker::new(true, 5.0))) // Auto-fill with 5bps slippage
+        } else {
+            info!("💰 Live trading mode");
+            None
+        };
+        
+        // Create WebSocket client (optional - can use REST fallback)
+        let websocket = if !config.enable_paper_trading {
+            info!("📡 WebSocket enabled for real-time data");
+            Some(Arc::new(AngelWebSocket::new(Arc::clone(&token_manager))))
+        } else {
+            info!("📝 Paper mode - WebSocket disabled");
+            None
+        };
+        
+        // Create bar aggregator
+        let bar_aggregator = Arc::new(MultiBarAggregator::new(Arc::clone(&event_bus)));
+        
+        // Create instrument cache
+        let instrument_cache = Arc::new(InstrumentCache::new(Arc::clone(&broker_client)));
+        
+        // Create order validator
+        let order_validator = Arc::new(OrderValidator::new(Arc::clone(&config)));
         
         // Create managers
         let strategy = Arc::new(AdxStrategy::new(Arc::clone(&config)));
@@ -124,6 +157,11 @@ impl TradingApp {
             event_bus,
             token_manager,
             broker_client,
+            paper_broker,
+            websocket,
+            bar_aggregator,
+            instrument_cache,
+            order_validator,
             strategy,
             order_manager,
             position_manager,
@@ -131,6 +169,7 @@ impl TradingApp {
             daily_bars,
             hourly_bars,
             session_uuid,
+            nifty_token: Arc::new(RwLock::new(None)),
             daily_analysis_done: Arc::new(RwLock::new(false)),
             last_hourly_check: Arc::new(RwLock::new(None)),
             shutdown: Arc::new(RwLock::new(false)),
@@ -159,10 +198,11 @@ impl TradingApp {
             }
             
             let now = chrono::Utc::now();
+            let today = now.date_naive();
             
-            // Check if today is a trading day
-            if !is_trading_day(now) {
-                info!("📅 Today is not a trading day - waiting until next trading day");
+            // Check if today is a trading day (includes NSE holidays)
+            if !is_trading_day_with_holidays(today) {
+                info!("📅 Today is not a trading day (weekend or holiday) - waiting");
                 tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
                 continue;
             }
@@ -212,6 +252,29 @@ impl TradingApp {
         Ok(())
     }
     
+    /// Start tick processing loop
+    async fn start_tick_processing(&self) {
+        if let Some(ws) = &self.websocket {
+            let rx = ws.get_tick_receiver();
+            let aggregator = Arc::clone(&self.bar_aggregator);
+            
+            tokio::spawn(async move {
+                let mut rx = rx.write().await;
+                
+                while let Some(tick) = rx.recv().await {
+                    // Process tick through bar aggregators
+                    if let Err(e) = aggregator.process_tick(tick).await {
+                        error!("Error processing tick: {}", e);
+                    }
+                }
+                
+                warn!("Tick processing loop ended");
+            });
+            
+            info!("✅ Tick processing loop started");
+        }
+    }
+    
     /// Initialize session (authentication, data loading)
     async fn initialize_session(&self) -> Result<()> {
         info!("🔐 Initializing session...");
@@ -240,6 +303,59 @@ impl TradingApp {
                 session_id: self.session_uuid.clone(),
             },
         )).await?;
+        
+        // Download instrument master
+        if self.instrument_cache.needs_refresh().await {
+            info!("📥 Downloading instrument master...");
+            self.instrument_cache.refresh().await?;
+            
+            self.event_bus.publish(Event::new(
+                EventType::InstrumentMasterDownloaded,
+                EventPayload::InstrumentMasterDownloaded {
+                    instrument_count: self.instrument_cache.size().await,
+                    file_path: "memory".to_string(),
+                },
+            )).await?;
+        }
+        
+        // Get NIFTY token
+        let nifty_token = self.instrument_cache.get_nifty_token().await?;
+        {
+            let mut token = self.nifty_token.write().await;
+            *token = Some(nifty_token.clone());
+        }
+        info!("✅ NIFTY token: {}", nifty_token);
+        
+        // Setup bar aggregators
+        self.bar_aggregator.add_aggregator(
+            "NIFTY".to_string(),
+            Timeframe::OneHour,
+            Arc::clone(&self.hourly_bars),
+        ).await;
+        
+        self.bar_aggregator.add_aggregator(
+            "NIFTY".to_string(),
+            Timeframe::OneDay,
+            Arc::clone(&self.daily_bars),
+        ).await;
+        
+        // Connect WebSocket if available
+        if let Some(ws) = &self.websocket {
+            match ws.connect().await {
+                Ok(_) => {
+                    // Subscribe to NIFTY
+                    ws.subscribe(vec![nifty_token.clone()], "NFO").await?;
+                    
+                    // Start tick processing loop
+                    self.start_tick_processing().await;
+                    
+                    info!("✅ WebSocket connected and subscribed");
+                }
+                Err(e) => {
+                    warn!("⚠️  WebSocket connection failed: {} - using REST fallback", e);
+                }
+            }
+        }
         
         info!("✅ Session initialized successfully");
         Ok(())
@@ -410,9 +526,12 @@ impl TradingApp {
             &chrono::Utc::now().timestamp_millis().to_string(),
         ]);
         
-        // Create symbol (would need actual symbol from instrument master)
-        let symbol = format!("NIFTY{}{}", signal.strike, signal.option_type.as_str());
-        let token = "placeholder_token"; // Would get from instrument master
+        // Get actual token and symbol from instrument cache
+        let (token, symbol) = self.instrument_cache
+            .find_option_token("NIFTY", signal.strike, signal.option_type, None)
+            .await?;
+        
+        info!("📍 Using instrument: {} (token: {})", symbol, token);
         
         // Placeholder option price
         let option_price = 125.0;
