@@ -1089,3 +1089,58 @@
 - [ ] Walk-forward analysis
 
 This enhanced version provides comprehensive guidance for implementation with intelligent decision-making logic and smart operations that adapt to market conditions while maintaining safety and preventing system failures.
+
+---
+
+## 12. Rust + Angel One API Implementation Gap Analysis
+
+### 12.1 API Integration
+
+- **Angel One API Mapping**: All references to Kite API (e.g., `kite.profile()`, `kite.ltp()`, order placement, WebSocket) must be mapped to Angel One equivalents. Angel One’s endpoints, authentication, and data formats differ.
+- **Rust SDK**: No official Rust SDK for Angel One. You must implement REST and WebSocket clients using crates like `reqwest` (HTTP) and `tokio-tungstenite` (WebSocket).
+- **Authentication**: Angel One uses OAuth2 and session tokens. Update login/session logic accordingly.
+
+### 12.2 Rust-Specific Architecture
+
+- **Async Design**: Use Rust’s async ecosystem (`tokio`, `async-std`) for concurrent data fetching, order placement, and real-time monitoring.
+- **Error Handling**: Refactor all error handling to use Rust’s `Result` and `Option` types, with robust error propagation and recovery.
+- **Data Storage**: Use `serde_json` for JSON file management. Implement efficient file rotation and retention logic for tick/timeframe data.
+- **Testing**: Leverage Rust’s built-in test framework for unit and integration tests, especially for trading logic and API wrappers.
+
+### 12.3 Angel One API Limitations
+
+- **Rate Limits**: Angel One’s rate limits may differ from Kite. Validate and update request queuing, batching, and backoff strategies.
+- **Order Types**: Confirm support for all required order types (market, limit, bracket, cover, etc.) and execution features.
+- **WebSocket Features**: Ensure Angel One’s WebSocket provides all necessary real-time data (LTP, option chain, order status).
+
+### 12.4 Regulatory & Compliance
+
+- **SEBI Compliance**: Implement position limits, margin checks, and audit trails in Rust. Angel One may provide some compliance data, but reporting logic must be custom-built.
+- **Tax & Legal**: Build P&L, STT, and tax reporting modules in Rust.
+
+### 12.5 Advanced Features
+
+- **Greeks & Analytics**: Rust ecosystem has limited options for options Greeks and advanced analytics. You may need to port Python logic or implement from scratch.
+- **Machine Learning**: ML libraries in Rust are less mature. For predictive models, consider using Python microservices or FFI if needed.
+- **Visualization**: For dashboards and charts, use external tools or web integrations.
+
+### 12.6 Monitoring & Notification
+
+- **Logging**: Use crates like `log` and `env_logger` for system and error logs.
+- **Notification**: Implement email/SMS/push notifications using Rust crates or external services.
+
+### 12.7 Multi-Broker & Redundancy
+
+- **Broker Abstraction**: Design a trait-based abstraction for broker APIs to support multi-broker and failover logic.
+- **Redundancy**: Implement backup data sources and execution paths.
+
+### 12.8 Documentation & API Differences
+
+- **Document Angel One API endpoints** and differences from Kite for future maintainability.
+- **Update all code references** and examples to Angel One API.
+
+---
+
+**Summary:**  
+This gap analysis highlights the key areas to address for a robust Rust + Angel One option trading bot.  
+Prioritize API mapping, async architecture, error handling, compliance, and advanced analytics for production readiness.
