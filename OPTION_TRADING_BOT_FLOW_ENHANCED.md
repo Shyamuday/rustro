@@ -94,7 +94,7 @@
   - **Data Gap Detection**: Identify and log missing data periods
   - **Data Validation**: Verify data integrity and completeness
   - **Token Refresh**: Update access tokens if needed
-  - **System Maintenance**: Run database cleanup and optimization
+  - **System Maintenance**: Run JSON file cleanup and archival
   - **Backup Operations**: Create data backups and snapshots
   - **Strategy Analysis**: Run backtesting on historical data
   - **Report Generation**: Create performance and data quality reports
@@ -106,7 +106,7 @@
   - Generate gap report for manual review
 - **Maintenance Tasks**:
   - Clean up temporary files
-  - Optimize database performance
+  - Optimize JSON file storage (compression, archival)
   - Update instrument lists
   - Refresh configuration files
   - Test system components
@@ -118,7 +118,7 @@
 
 ### 1.6 System Health Check
 
-- Verify database connectivity
+- Verify JSON file storage directories exist and are writable
 - Check disk space availability
 - Validate network connectivity
 - Test WebSocket connection capability
@@ -133,12 +133,14 @@
   - Download 1 year of daily data for underlying stocks/indices (ADX calculation)
   - Download 3 months of 1-hour data for medium-term analysis
   - **JSON File Storage**: Store data in simple JSON files (no database)
+  - **Compression Format**: Use gzip (.gz) for archived files (older than 7 days)
+  - **Active Files**: Keep as plain JSON for easy access and debugging
   - **File Structure** (Hybrid Organization):
-    - `raw/[symbol]_today.json` (current day)
-    - `raw/[symbol]_yesterday.json` (previous day, delete after 2 days)
-    - `timeframes/[symbol]/1m.json` (3 months)
-    - `timeframes/[symbol]/1h.json` (3 months)
-    - `timeframes/[symbol]/daily.json` (1 year)
+    - `raw/[symbol]_today.json` (current day - plain JSON)
+    - `raw/[symbol]_yesterday.json` (previous day, delete after 2 days - plain JSON)
+    - `timeframes/[symbol]/1m.json` (3 months - compress files older than 7 days to .json.gz)
+    - `timeframes/[symbol]/1h.json` (3 months - compress files older than 7 days to .json.gz)
+    - `timeframes/[symbol]/daily.json` (1 year - compress files older than 7 days to .json.gz)
   - **When to use**: System startup, ADX calculation, backtesting
 
 - **Market Data API**:
@@ -292,24 +294,2904 @@
 
 ## 3. Token Management & ATM Selection
 
-### 3.1 Token Discovery & Database Creation
+**⚠️ STRATEGY OVERVIEW: Multi-Timeframe ADX Approach**
 
-- **CSV Download & Parsing**:
-  - Download CSV from broker at month-end expiry
-  - If CSV not available, use broker API to fetch token list
-  - Parse CSV/API response to extract future and option tokens
-- **First Time Setup**:
-  - Filter by instrument type (FUT/OPT)
-  - Group by underlying symbol (NIFTY, BANKNIFTY, etc.)
-  - Separate futures (FUT) and options (OPT) tokens
-  - Identify expiry dates and strike prices
-  - Create master token mapping database
-- **Token Validation**:
-  - Validate token status (active/suspended/expired)
-  - Check lot sizes and tick sizes for each token
-  - Verify trading hours and market timings
-  - Filter by minimum price (avoid penny stocks)
-  - Check corporate actions (splits, bonuses, dividends)
+```
+┌──────────────────────────────────────────────────────────┐
+│     COMPLETE STRATEGY FLOW (Daily + Hourly)              │
+└──────────────────────────────────────────────────────────┘
+
+Step 1: DAILY Timeframe Analysis (9:15 AM)
+───────────────────────────────────────────
+Purpose: Determine WHICH side to trade (CE or PE)
+Data: Last 30 DAILY bars
+Indicators: ADX, +DI, -DI (14-period)
+
+IF Daily ADX < 25:
+    → NO TRADE (weak trend)
+
+ELSE IF Daily +DI > Daily -DI:
+    → Direction = CE (bullish trend)
+    → Wait for hourly confirmation
+
+ELSE IF Daily -DI > Daily +DI:
+    → Direction = PE (bearish trend)
+    → Wait for hourly confirmation
+
+Step 2: HOURLY Timeframe Analysis (Dynamic Sync)
+────────────────────────────────────────────────
+Purpose: Determine WHEN to enter (NOT to reverse direction!)
+Data: Last 30 HOURLY bars (properly aligned)
+Indicators: ADX, +DI, -DI (14-period)
+
+⚠️ CRITICAL: Daily trend is MASTER for entire day
+             Hourly only confirms entry timing
+             NEVER trade against daily trend!
+
+⚠️ CANDLE TIMING: Hourly candles MUST be market-hour aligned
+   Market Hours: 9:15 AM - 3:30 PM (6 hours 15 minutes)
+
+Hourly Candle Schedule (2 Options):
+────────────────────────────────────
+
+Option A: 1-Hour Fixed Intervals (Recommended)
+├─ 09:15 - 10:15 (1st hourly candle)
+├─ 10:15 - 11:15 (2nd hourly candle)
+├─ 11:15 - 12:15 (3rd hourly candle)
+├─ 12:15 - 13:15 (4th hourly candle)
+├─ 13:15 - 14:15 (5th hourly candle)
+└─ 14:15 - 15:15 (6th hourly candle, closes at 15:30)
+
+Option B: Regular Hour Boundaries
+├─ 09:15 - 10:00 (45 min, partial)
+├─ 10:00 - 11:00 (1st full hour)
+├─ 11:00 - 12:00 (2nd full hour)
+├─ 12:00 - 13:00 (3rd full hour)
+├─ 13:00 - 14:00 (4th full hour)
+├─ 14:00 - 15:00 (5th full hour)
+└─ 15:00 - 15:30 (30 min, partial)
+
+Recommended: Option A (Fixed 60-min intervals from 9:15)
+Reason: No partial candles, consistent timing
+
+Real-Time Candle Construction:
+───────────────────────────────
+
+FUNCTION BUILD_HOURLY_CANDLE(start_time, end_time):
+
+    // Get all tick data from Angel One API
+    ticks = GET_TICKS_FROM_API(
+        symbol: "NIFTY",
+        start: start_time,
+        end: end_time
+    )
+
+    // Construct OHLC
+    candle = {
+        open: ticks[0].ltp,           // First tick LTP
+        high: MAX(ticks.ltp),         // Highest LTP
+        low: MIN(ticks.ltp),          // Lowest LTP
+        close: ticks[last].ltp,       // Last tick LTP
+        volume: SUM(ticks.volume),    // Total volume
+        timestamp: end_time           // Candle close time
+    }
+
+    RETURN candle
+
+Update Schedule:
+────────────────
+Every candle close (10:15, 11:15, 12:15, etc.):
+1. Construct completed hourly candle
+2. Calculate ADX, +DI, -DI on last 30 hourly bars
+3. Check alignment with daily direction
+4. Generate entry/exit signals
+
+Mid-Candle Updates (Optional):
+────────────────────────────────
+Every 1 minute during candle formation:
+1. Update current candle (partial)
+2. Calculate indicators with partial candle
+3. Prepare for potential signals
+4. Don't trade until candle closes ✅
+
+IF daily_direction == CE:
+    // Wait for hourly candle to close
+    IF hourly_candle_closed:
+        hourly_adx = CALCULATE_HOURLY_ADX(last_30_candles)
+        hourly_plus_di = CALCULATE_HOURLY_PLUS_DI(last_30_candles)
+        hourly_minus_di = CALCULATE_HOURLY_MINUS_DI(last_30_candles)
+
+        IF hourly_adx >= 25 AND hourly_plus_di > hourly_minus_di:
+            → Hourly CONFIRMS daily bullish ✅
+            → WAIT for CE crossover signal
+            → Then BUY CE ✅
+        ELSE:
+            → NO TRADE ⏳ (Wait for hourly to align back)
+            → DO NOT switch to PE!
+
+ELSE IF daily_direction == PE:
+    IF hourly_candle_closed:
+        hourly_adx = CALCULATE_HOURLY_ADX(last_30_candles)
+        hourly_plus_di = CALCULATE_HOURLY_PLUS_DI(last_30_candles)
+        hourly_minus_di = CALCULATE_HOURLY_MINUS_DI(last_30_candles)
+
+        IF hourly_adx >= 25 AND hourly_minus_di > hourly_plus_di:
+            → Hourly CONFIRMS daily bearish ✅
+            → WAIT for PE crossover signal
+            → Then BUY PE ✅
+        ELSE:
+            → NO TRADE ⏳ (Wait for hourly to align back)
+            → DO NOT switch to CE!
+
+Real-Time Data Flow from Angel One API:
+────────────────────────────────────────
+
+⚠️ CRITICAL: WebSocket has frequent gaps!
+   PRIMARY: REST API for candle data (reliable)
+   SECONDARY: WebSocket for real-time price alerts only
+
+┌─────────────────────────────────────────────────────────┐
+│  REST API → Historical Candles → Indicators (PRIMARY)  │
+│  WebSocket → Live LTP → Alerts/Monitoring (SECONDARY)  │
+└─────────────────────────────────────────────────────────┘
+
+Recommended Data Strategy:
+──────────────────────────
+
+✅ PRIMARY: Use REST API for all candle data
+   - More reliable (no gaps)
+   - Official exchange data
+   - Consistent OHLCV values
+   - Better for indicator calculation
+
+❌ SECONDARY: WebSocket only for monitoring
+   - Real-time LTP for alerts
+   - Position P&L tracking
+   - ATM strike updates
+   - NOT for building candles
+
+Step-by-Step Data Processing (REST API Focused):
+─────────────────────────────────────────────────
+
+1. Initial Load (9:00 AM):
+   ├─ Fetch last 30 DAILY candles via REST API
+   ├─ Fetch last 30 HOURLY candles via REST API
+   ├─ Calculate initial indicators
+   └─ Store in memory + JSON files
+
+2. Real-Time Updates (Every Hourly Candle Close):
+
+   At 10:15:00 (candle closes):
+   ├─ Fetch completed hourly candle via REST API
+   ├─ Validate OHLCV data
+   ├─ Add to hourly_candles array
+   ├─ Recalculate indicators
+   └─ Generate entry/exit signals
+
+3. WebSocket (Parallel, for monitoring only):
+   ├─ Subscribe to NIFTY/BANKNIFTY LTP
+   ├─ Update current price every tick
+   ├─ Check stop loss in real-time
+   ├─ Update ATM strike calculation
+   └─ Alert on significant moves
+
+4. Between Candle Closes (10:16 - 11:14):
+   ├─ Monitor current price via WebSocket LTP
+   ├─ Check for stop loss hits
+   ├─ Track position P&L
+   ├─ Wait for next candle (11:15)
+   └─ Don't trade on partial data
+
+5. At Next Candle Close (11:15:00):
+   ├─ Fetch new completed candle via REST API
+   ├─ Update indicators
+   ├─ Check alignment (daily + hourly)
+   └─ Generate new signals
+
+Complete Algorithm:
+───────────────────
+
+```
+
+GLOBAL:
+tick_buffer = {} // Store ticks for each symbol
+hourly_candles = [] // Store completed hourly candles
+current_candle_start = "09:15:00"
+
+FUNCTION ON_WEBSOCKET_TICK(tick):
+
+    // Store tick in buffer
+    symbol = tick.symbol  // e.g., "NIFTY"
+
+    IF symbol NOT IN tick_buffer:
+        tick_buffer[symbol] = []
+
+    tick_buffer[symbol].append({
+        ltp: tick.ltp,
+        volume: tick.volume,
+        timestamp: tick.timestamp
+    })
+
+    // Check if candle should close
+    current_time = GET_CURRENT_TIME()
+
+    IF IS_CANDLE_CLOSE_TIME(current_time):  // 10:15, 11:15, etc.
+        BUILD_AND_SAVE_CANDLE(symbol, current_candle_start, current_time)
+
+        // Reset for next candle
+        tick_buffer[symbol] = []
+        current_candle_start = current_time
+
+FUNCTION BUILD_AND_SAVE_CANDLE(symbol, start_time, end_time):
+
+    ticks = tick_buffer[symbol]
+
+    IF ticks.length == 0:
+        LOG_WARN("No ticks received for candle!")
+        RETURN
+
+    // Construct OHLC from ticks
+    candle = {
+        symbol: symbol,
+        timeframe: "1H",
+        open: ticks[0].ltp,
+        high: MAX([t.ltp for t in ticks]),
+        low: MIN([t.ltp for t in ticks]),
+        close: ticks[last].ltp,
+        volume: SUM([t.volume for t in ticks]),
+        timestamp: end_time,
+        tick_count: ticks.length
+    }
+
+    // Save to hourly candles array
+    hourly_candles.append(candle)
+
+    // Save to JSON file (persistent storage)
+    SAVE_CANDLE_TO_FILE(candle)
+
+    LOG_INFO("Hourly candle completed:", candle)
+
+    // Trigger indicator calculation
+    IF hourly_candles.length >= 30:
+        CALCULATE_HOURLY_INDICATORS()
+
+FUNCTION IS_CANDLE_CLOSE_TIME(current_time):
+
+    candle_close_times = [
+        "10:15:00",
+        "11:15:00",
+        "12:15:00",
+        "13:15:00",
+        "14:15:00",
+        "15:15:00"
+    ]
+
+    // Check if current time matches any close time
+    // Allow 5-second window (10:15:00 to 10:15:05)
+    FOR close_time IN candle_close_times:
+        IF current_time >= close_time AND
+           current_time < close_time + 5_seconds:
+            RETURN TRUE
+
+    RETURN FALSE
+
+FUNCTION CALCULATE_HOURLY_INDICATORS():
+
+    // Use last 30 hourly candles
+    bars = hourly_candles[-30:]
+
+    // Calculate indicators
+    adx = CALCULATE_ADX(bars, period=14)
+    plus_di = CALCULATE_PLUS_DI(bars, period=14)
+    minus_di = CALCULATE_MINUS_DI(bars, period=14)
+
+    // Store results
+    hourly_indicators = {
+        adx: adx,
+        plus_di: plus_di,
+        minus_di: minus_di,
+        timestamp: GET_CURRENT_TIME()
+    }
+
+    // Check alignment with daily
+    CHECK_DAILY_HOURLY_ALIGNMENT()
+
+```
+
+**UPDATED: Hybrid Strategy (REST Primary + WebSocket Secondary):**
+
+```
+
+⚠️ CRITICAL CHANGES Based on WebSocket Gap Issues:
+
+1. PRIMARY DATA SOURCE: REST API (Historical endpoint)
+
+   - Download initial 30 hourly candles when token selected
+   - Fetch new completed candle at every hourly close
+   - More reliable, no gaps, official exchange data
+
+2. SECONDARY: WebSocket (Monitoring only)
+
+   - Real-time LTP for stop loss checks
+   - Position P&L tracking
+   - Gap detection (if >1 minute → fetch from REST)
+
+3. AUTO-RECOVERY: Gap >1 Minute
+   - Detect: current_time - last_tick_timestamp > 60s
+   - Action: Fetch missing candles from REST API immediately
+   - Insert sorted, recalculate indicators
+
+Complete Updated Flow:
+──────────────────────
+
+ON_TOKEN_SELECTED(token, symbol):
+historical_data = FETCH_REST_API(symbol, 30 candles)
+VALIDATE_AND_STORE(historical_data)
+CALCULATE_INDICATORS(symbol)
+SUBSCRIBE_WEBSOCKET(token) // For monitoring only
+last_tick_timestamp[symbol] = NOW()
+
+ON_WEBSOCKET_TICK(tick):
+gap = NOW() - last_tick_timestamp[symbol]
+IF gap > 60_seconds:
+FILL_GAP_FROM_REST(symbol, last_tick, NOW()) // Auto-fix
+last_tick_timestamp[symbol] = NOW()
+// Use LTP for stop loss checks, ATM updates
+
+ON_HOURLY_CANDLE_CLOSE(time):
+SLEEP(30_seconds) // Wait for REST API to have data
+new_candle = FETCH_REST_API(symbol, time, "60m")
+VALIDATE_AND_ADD(new_candle)
+RECALCULATE_INDICATORS(symbol)
+GENERATE_SIGNALS()
+
+Benefits of This Approach:
+───────────────────────────
+✅ No gaps (REST API is reliable)
+✅ Official exchange data
+✅ Auto-recovery if WebSocket fails
+✅ WebSocket used for real-time monitoring only
+✅ Best of both worlds
+
+```
+
+Handling Edge Cases:
+────────────────────
+
+1. Missing Ticks (WebSocket Disconnect):
+   ├─ If no ticks for >60 seconds → Reconnect
+   ├─ Fetch missing data via REST API
+   └─ Reconstruct candle from REST historical data
+
+2. Partial Candles (System Restart):
+   ├─ On restart at 10:30 AM
+   ├─ Current candle (10:15-11:15) is partial
+   ├─ Use partial candle for monitoring
+   └─ Wait for 11:15 for confirmed signal
+
+3. Market Close (3:30 PM):
+   ├─ Last candle: 14:15 - 15:15
+   ├─ Extends to 15:30 (extra 15 minutes)
+   └─ Build final candle at 15:30
+
+4. Tick Timestamp Sync:
+   ├─ ALWAYS use exchange timestamp from tick
+   ├─ NOT local system time
+   ├─ Handle timezone (IST)
+   └─ Validate timestamp sequence
+
+Data Quality & Synchronization (CRITICAL):
+───────────────────────────────────────────
+
+⚠️ RULE: NEVER trade without fully synchronized, validated data!
+
+Complete Data Sync Strategy:
+─────────────────────────────
+
+Step 1: Initial Data Loading (Before 9:15 AM)
+──────────────────────────────────────────────
+
+At 9:00 AM (15 minutes before market open):
+
+1. Load Historical Daily Data:
+   ├─ Fetch last 30 DAILY candles from Angel One REST API
+   ├─ Validate: Each candle has complete OHLCV
+   ├─ Calculate: Daily ADX, +DI, -DI
+   └─ Store: In memory + JSON file
+
+2. Load Historical Hourly Data:
+   ├─ Fetch last 30 HOURLY candles from Angel One REST API
+   ├─ Validate: Candles are properly aligned (9:15-10:15, etc.)
+   ├─ Calculate: Hourly ADX, +DI, -DI
+   └─ Store: In memory + JSON file
+
+3. Data Validation Before Trading:
+   ├─ Check: All 30 daily candles present
+   ├─ Check: All 30 hourly candles present
+   ├─ Check: No gaps in data
+   ├─ Check: Timestamps are sequential
+   └─ Status: READY or NOT_READY
+
+```
+
+FUNCTION INITIALIZE_DATA_BEFORE_TRADING():
+
+    LOG_INFO("Starting data initialization at 9:00 AM...")
+
+    // Step 1: Fetch Daily Data
+    daily_candles = FETCH_DAILY_HISTORICAL(
+        symbol: "NIFTY",
+        count: 30
+    )
+
+    IF daily_candles.length < 30:
+        LOG_ERROR("Insufficient daily data:", daily_candles.length)
+        RETURN "NOT_READY"
+
+    // Validate daily data
+    IF NOT VALIDATE_CANDLE_ARRAY(daily_candles):
+        LOG_ERROR("Daily data validation failed")
+        RETURN "NOT_READY"
+
+    // Step 2: Fetch Hourly Data
+    hourly_candles = FETCH_HOURLY_HISTORICAL(
+        symbol: "NIFTY",
+        count: 30,
+        interval: "60m"
+    )
+
+    IF hourly_candles.length < 30:
+        LOG_ERROR("Insufficient hourly data:", hourly_candles.length)
+        RETURN "NOT_READY"
+
+    // Validate hourly data
+    IF NOT VALIDATE_CANDLE_ARRAY(hourly_candles):
+        LOG_ERROR("Hourly data validation failed")
+        RETURN "NOT_READY"
+
+    // Step 3: Calculate Initial Indicators
+    daily_indicators = CALCULATE_DAILY_INDICATORS(daily_candles)
+    hourly_indicators = CALCULATE_HOURLY_INDICATORS(hourly_candles)
+
+    // Step 4: Store in memory
+    STORE_IN_MEMORY(daily_candles, hourly_candles)
+
+    // Step 5: Save to persistent storage
+    SAVE_TO_JSON(daily_candles, "data/daily_candles_YYYYMMDD.json")
+    SAVE_TO_JSON(hourly_candles, "data/hourly_candles_YYYYMMDD.json")
+
+    LOG_INFO("Data initialization complete ✅")
+    RETURN "READY"
+
+```
+
+Step 2: Real-Time Sync During Trading Hours
+────────────────────────────────────────────
+
+At every hourly candle close (10:15, 11:15, etc.):
+
+1. Build Candle from WebSocket Ticks
+2. Validate Constructed Candle
+3. Cross-Check with REST API (for sync)
+4. Compare: WebSocket candle vs REST candle
+5. If mismatch → Use REST candle (official source)
+6. Update indicators with new candle
+7. Generate signals
+
+```
+
+FUNCTION ON_HOURLY_CANDLE_CLOSE(time):
+
+    LOG_INFO("Hourly candle closed at:", time)
+
+    // Build from WebSocket ticks
+    ws_candle = BUILD_CANDLE_FROM_TICKS(tick_buffer)
+
+    // Validate basic OHLC
+    IF NOT VALIDATE_CANDLE(ws_candle):
+        LOG_ERROR("WebSocket candle validation failed")
+        // Try REST API as fallback
+        ws_candle = FETCH_REST_CANDLE(time)
+
+    // Cross-check with REST API (official source)
+    rest_candle = FETCH_REST_CANDLE_FOR_VALIDATION(time)
+
+    // Compare WebSocket vs REST
+    sync_status = COMPARE_CANDLES(ws_candle, rest_candle)
+
+    IF sync_status == "MISMATCH":
+        LOG_WARN("WebSocket vs REST mismatch detected!")
+        LOG_WARN("WS:", ws_candle)
+        LOG_WARN("REST:", rest_candle)
+
+        // Use REST as source of truth
+        final_candle = rest_candle
+
+        // Alert: Data sync issue
+        SEND_ALERT("Data sync issue detected, using REST API")
+    ELSE:
+        LOG_INFO("Data sync OK ✅")
+        final_candle = ws_candle
+
+    // Add to candle array
+    hourly_candles.append(final_candle)
+
+    // Keep only last 30 candles in memory
+    IF hourly_candles.length > 30:
+        hourly_candles = hourly_candles[-30:]
+
+    // Save to persistent storage
+    SAVE_CANDLE_TO_JSON(final_candle)
+
+    // Update indicators
+    UPDATE_INDICATORS(hourly_candles)
+
+    // Check if ready for trading
+    IF hourly_candles.length >= 30:
+        trading_ready = TRUE
+
+    RETURN final_candle
+
+```
+
+Step 3: Continuous Data Quality Monitoring
+───────────────────────────────────────────
+
+Monitor every minute during trading hours:
+
+```
+
+FUNCTION MONITOR_DATA_QUALITY():
+
+    EVERY 1 MINUTE:
+
+        // Check 1: WebSocket Connection
+        IF NOT websocket.is_connected():
+            LOG_ERROR("WebSocket disconnected!")
+            RECONNECT_WEBSOCKET()
+
+        // Check 2: Tick Flow
+        last_tick_time = GET_LAST_TICK_TIMESTAMP()
+        time_since_last_tick = NOW() - last_tick_time
+
+        IF time_since_last_tick > 60_seconds:
+            LOG_ERROR("No ticks for", time_since_last_tick, "seconds!")
+            TRIGGER_DATA_RESYNC()
+
+        // Check 3: Candle Continuity
+        IF GAPS_DETECTED_IN_CANDLES():
+            LOG_ERROR("Gap detected in candle sequence!")
+            FILL_GAPS_FROM_REST_API()
+
+        // Check 4: Indicator Freshness
+        indicator_age = NOW() - hourly_indicators.timestamp
+        IF indicator_age > 3600_seconds:  // 1 hour old
+            LOG_WARN("Indicators not updated for 1 hour!")
+            RECALCULATE_INDICATORS()
+
+```
+
+Data Quality Validation Functions:
+───────────────────────────────────
+
+FUNCTION VALIDATE_CANDLE(candle):
+
+    // Check 1: Required fields present
+    IF NOT candle.has_fields(["open", "high", "low", "close", "volume", "timestamp"]):
+        LOG_ERROR("Missing required fields in candle")
+        RETURN FALSE
+
+    // Check 2: OHLC relationship
+    IF candle.high < candle.low:
+        LOG_ERROR("Invalid: High < Low")
+        RETURN FALSE
+
+    IF candle.open > candle.high OR candle.open < candle.low:
+        LOG_ERROR("Invalid: Open outside H-L range")
+        RETURN FALSE
+
+    IF candle.close > candle.high OR candle.close < candle.low:
+        LOG_ERROR("Invalid: Close outside H-L range")
+        RETURN FALSE
+
+    // Check 3: Volume sanity
+    IF candle.volume < 0:
+        LOG_ERROR("Invalid: Negative volume")
+        RETURN FALSE
+
+    // Check 4: Price sanity (not zero or negative)
+    IF candle.open <= 0 OR candle.high <= 0 OR
+       candle.low <= 0 OR candle.close <= 0:
+        LOG_ERROR("Invalid: Zero or negative price")
+        RETURN FALSE
+
+    // Check 5: Reasonable price movement
+    range_pct = (candle.high - candle.low) / candle.open * 100
+    IF range_pct > 5:  // More than 5% in 1 hour
+        LOG_WARN("Unusual: Price range", range_pct, "%")
+        // Don't fail, just warn
+
+    RETURN TRUE
+
+FUNCTION VALIDATE_CANDLE_ARRAY(candles):
+
+    // Check 1: Sufficient count
+    IF candles.length < 30:
+        LOG_ERROR("Insufficient candles:", candles.length)
+        RETURN FALSE
+
+    // Check 2: Each candle is valid
+    FOR candle IN candles:
+        IF NOT VALIDATE_CANDLE(candle):
+            RETURN FALSE
+
+    // Check 3: Timestamps are sequential
+    FOR i FROM 1 TO candles.length - 1:
+        IF candles[i].timestamp <= candles[i-1].timestamp:
+            LOG_ERROR("Non-sequential timestamps at index", i)
+            RETURN FALSE
+
+    // Check 4: No gaps (for hourly: 60 min between candles)
+    FOR i FROM 1 TO candles.length - 1:
+        time_diff = candles[i].timestamp - candles[i-1].timestamp
+        expected_diff = 3600  // 60 minutes in seconds
+
+        IF ABS(time_diff - expected_diff) > 300:  // 5 min tolerance
+            LOG_ERROR("Gap detected between candles:", time_diff, "seconds")
+            RETURN FALSE
+
+    // Check 5: Price continuity (no wild jumps)
+    FOR i FROM 1 TO candles.length - 1:
+        gap_pct = ABS(candles[i].open - candles[i-1].close) / candles[i-1].close * 100
+
+        IF gap_pct > 3:  // More than 3% gap
+            LOG_WARN("Large gap between candles:", gap_pct, "%")
+            // Don't fail, just warn (could be genuine gap-up/down)
+
+    LOG_INFO("Candle array validation passed ✅")
+    RETURN TRUE
+
+FUNCTION COMPARE_CANDLES(ws_candle, rest_candle):
+
+    // Allow small tolerance for floating point differences
+    TOLERANCE = 0.05  // 5 paisa tolerance
+
+    // Compare each field
+    open_match = ABS(ws_candle.open - rest_candle.open) < TOLERANCE
+    high_match = ABS(ws_candle.high - rest_candle.high) < TOLERANCE
+    low_match = ABS(ws_candle.low - rest_candle.low) < TOLERANCE
+    close_match = ABS(ws_candle.close - rest_candle.close) < TOLERANCE
+
+    IF open_match AND high_match AND low_match AND close_match:
+        RETURN "MATCH"
+    ELSE:
+        RETURN "MISMATCH"
+
+FUNCTION TRIGGER_DATA_RESYNC():
+
+    LOG_INFO("Starting emergency data resync...")
+
+    // Stop trading temporarily
+    PAUSE_TRADING()
+
+    // Reconnect WebSocket
+    RECONNECT_WEBSOCKET()
+
+    // Fetch last 30 hourly candles from REST API
+    hourly_candles = FETCH_HOURLY_HISTORICAL(
+        symbol: "NIFTY",
+        count: 30,
+        interval: "60m"
+    )
+
+    // Validate
+    IF VALIDATE_CANDLE_ARRAY(hourly_candles):
+        // Replace in-memory candles
+        REPLACE_IN_MEMORY(hourly_candles)
+
+        // Recalculate indicators
+        UPDATE_INDICATORS(hourly_candles)
+
+        // Resume trading
+        RESUME_TRADING()
+
+        LOG_INFO("Data resync complete ✅")
+    ELSE:
+        LOG_ERROR("Data resync failed! Manual intervention required.")
+        SEND_ALERT("CRITICAL: Data resync failed")
+
+FUNCTION FILL_GAPS_FROM_REST_API():
+
+    LOG_INFO("Filling gaps in candle data...")
+
+    // Detect missing timestamps
+    missing_timestamps = DETECT_MISSING_CANDLES(hourly_candles)
+
+    FOR timestamp IN missing_timestamps:
+        // Fetch missing candle from REST API
+        missing_candle = FETCH_REST_CANDLE(timestamp)
+
+        IF missing_candle:
+            // Insert at correct position
+            INSERT_CANDLE_AT_POSITION(missing_candle, hourly_candles)
+            LOG_INFO("Filled gap at:", timestamp)
+        ELSE:
+            LOG_ERROR("Could not fetch missing candle for:", timestamp)
+
+    // Re-sort by timestamp
+    hourly_candles = SORT_BY_TIMESTAMP(hourly_candles)
+
+    // Validate after filling
+    IF VALIDATE_CANDLE_ARRAY(hourly_candles):
+        LOG_INFO("Gaps filled successfully ✅")
+    ELSE:
+        LOG_ERROR("Gap filling incomplete")
+```
+
+Data Quality Metrics Dashboard:
+────────────────────────────────
+
+Track continuously:
+├─ WebSocket uptime: 99.9% required
+├─ Tick frequency: >1 tick/second during market hours
+├─ Candle completion rate: 100% (all hourly candles)
+├─ Data sync accuracy: <0.1% mismatch rate
+├─ Gap incidents: 0 per day
+├─ Resync events: <3 per day
+└─ Indicator calculation latency: <100ms
+
+Critical Alerts:
+────────────────
+
+1. WebSocket disconnected >30 seconds → CRITICAL
+2. No ticks for >60 seconds → CRITICAL
+3. Candle validation failed → CRITICAL
+4. WS vs REST mismatch >3 times/hour → WARNING
+5. Gap detected in data → WARNING
+6. Indicators not updated for >1 hour → CRITICAL
+
+Step 3: Crossover Signal (Entry Confirmation)
+──────────────────────────────────────────────
+After Daily + Hourly both align, wait for crossover:
+
+For CE Entry (Bullish):
+├─ Daily: Bullish ✅
+├─ Hourly: Bullish ✅
+└─ Wait for: Price crosses above key level OR
++DI crosses above -DI OR
+ADX starts rising
+
+For PE Entry (Bearish):
+├─ Daily: Bearish ✅
+├─ Hourly: Bearish ✅
+└─ Wait for: Price crosses below key level OR
+-DI crosses above +DI OR
+ADX starts rising
+
+Step 4: Strike Selection (Real-Time)
+────────────────────────────────────
+Rule 1: ALWAYS trade ATM (At-The-Money)
+Rule 2: Use current week expiry
+Rule 3: Verify liquidity (OI > 1000)
+
+Example: NIFTY at 23,500
+→ Select 23500 strike
+→ Use nearest Thursday expiry
+→ If CE: NIFTY28DEC23500CE
+→ If PE: NIFTY28DEC23500PE
+
+Key Points:
+───────────
+✅ Daily defines DIRECTION for ENTIRE day (master)
+✅ Hourly confirms TIMING (must align with daily)
+✅ Crossover gives ENTRY signal (final confirmation)
+✅ NEVER trade against daily trend (even if hourly changes)
+✅ ATM strike for best liquidity
+✅ Current week expiry for tight spreads
+
+```
+
+### 3.1 Token Discovery & JSON File Creation
+
+#### 3.1.1 Angel One CSV Structure
+
+Angel One CSV columns (example):
+
+```
+
+token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg,tick_size
+99926000,NIFTY,NIFTY 50,,0.00,50,OPTIDX,NFO,0.05
+99926009,NIFTY23DEC23500CE,NIFTY,26Dec2024,23500.00,50,OPTIDX,NFO,0.05
+99926010,NIFTY23DEC23500PE,NIFTY,26Dec2024,23500.00,50,OPTIDX,NFO,0.05
+99926011,NIFTY23DEC23550CE,NIFTY,26Dec2024,23550.00,50,OPTIDX,NFO,0.05
+
+```
+
+**Key Fields**:
+
+- `token`: Numeric ID for Angel One API (e.g., 99926009)
+- `symbol`: Trading symbol (e.g., NIFTY23DEC23500CE)
+- `name`: Underlying name (e.g., NIFTY)
+- `expiry`: Expiry date (e.g., 26Dec2024)
+- `strike`: Strike price (e.g., 23500.00)
+- `instrumenttype`: OPTIDX (index options), OPTSTK (stock options)
+- `exch_seg`: Exchange segment (NFO for F&O)
+
+#### 3.1.2 CSV Download & Parsing
+
+```
+
+Algorithm: Download & Parse Angel One CSV
+
+1.  Download CSV:
+
+    - URL: https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
+    - Alternative: Use Angel One's searchScrip API endpoint
+    - Save to: data/tokens/angelone_master_YYYYMMDD.csv
+
+2.  Parse CSV:
+
+    - Read CSV line by line
+    - Skip header row
+    - Parse each line into structured format
+
+3.  Filter Options by Type:
+    index_options = [] // For NIFTY, BANKNIFTY, FINNIFTY, etc.
+    stock_options = [] // For RELIANCE, TCS, INFY, etc.
+
+    FOR each row IN csv:
+    // Skip non-option instruments
+    IF exch_seg != "NFO":
+    CONTINUE
+
+        // Filter Index Options
+        IF instrumenttype == "OPTIDX":
+            // Index options: NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX
+            ADD to index_options
+
+        // Filter Stock Options
+        ELSE IF instrumenttype == "OPTSTK":
+            // Stock options: RELIANCE, TCS, INFY, etc.
+            ADD to stock_options
+
+4.  Separate Index Options (Most liquid, preferred):
+    indices_map = HashMap<(underlying, expiry, strike), (ce_token, pe_token)>
+
+    FOR each option IN index_options:
+    underlying = option.name // "NIFTY", "BANKNIFTY", etc.
+    expiry = PARSE_EXPIRY(option.expiry)
+    strike = option.strike
+
+        key = (underlying, expiry, strike)
+
+        // Identify CE or PE from symbol
+        IF option.symbol ENDS_WITH "CE":
+            indices_map[key].ce_token = option.token
+            indices_map[key].ce_symbol = option.symbol
+        ELSE IF option.symbol ENDS_WITH "PE":
+            indices_map[key].pe_token = option.token
+            indices_map[key].pe_symbol = option.symbol
+
+        // Store additional info
+        indices_map[key].lot_size = option.lotsize
+        indices_map[key].tick_size = option.tick_size
+
+5.  Separate Stock Options (If trading F&O stocks):
+    stocks_map = HashMap<(underlying, expiry, strike), (ce_token, pe_token)>
+
+    FOR each option IN stock_options:
+    underlying = option.name // "RELIANCE", "TCS", etc.
+    expiry = PARSE_EXPIRY(option.expiry)
+    strike = option.strike
+
+        key = (underlying, expiry, strike)
+
+        IF option.symbol ENDS_WITH "CE":
+            stocks_map[key].ce_token = option.token
+            stocks_map[key].ce_symbol = option.symbol
+        ELSE IF option.symbol ENDS_WITH "PE":
+            stocks_map[key].pe_token = option.token
+            stocks_map[key].pe_symbol = option.symbol
+
+        stocks_map[key].lot_size = option.lotsize
+        stocks_map[key].tick_size = option.tick_size
+
+6.  Save to Separate JSON Files:
+    // Save index options
+    Write indices_map to: data/tokens/index_options_YYYYMMDD.json
+
+    // Save stock options (if needed)
+    Write stocks_map to: data/tokens/stock_options_YYYYMMDD.json
+
+````
+
+#### 3.1.2.1 Filtering Examples with Real CSV Data
+
+**Example CSV Rows:**
+
+```csv
+token,symbol,name,expiry,strike,lotsize,instrumenttype,exch_seg,tick_size
+99926000,NIFTY,NIFTY 50,,0.00,50,OPTIDX,NFO,0.05
+99926009,NIFTY23DEC23500CE,NIFTY,26Dec2024,23500.00,50,OPTIDX,NFO,0.05
+99926010,NIFTY23DEC23500PE,NIFTY,26Dec2024,23500.00,50,OPTIDX,NFO,0.05
+48926001,BANKNIFTY,NIFTY BANK,,0.00,15,OPTIDX,NFO,0.05
+48926009,BANKNIFTY23DEC48500CE,BANKNIFTY,27Dec2024,48500.00,15,OPTIDX,NFO,0.05
+48926010,BANKNIFTY23DEC48500PE,BANKNIFTY,27Dec2024,48500.00,15,OPTIDX,NFO,0.05
+35926001,RELIANCE,RELIANCE,,0.00,250,OPTSTK,NFO,0.05
+35926009,RELIANCE23DEC2900CE,RELIANCE,28Dec2024,2900.00,250,OPTSTK,NFO,0.05
+35926010,RELIANCE23DEC2900PE,RELIANCE,28Dec2024,2900.00,250,OPTSTK,NFO,0.05
+````
+
+**Filtering Algorithm (Detailed):**
+
+```
+Step 1: Identify Instrument Type
+────────────────────────────────
+
+FOR each row:
+    // Check exchange segment first
+    IF exch_seg == "NFO":
+
+        // Check instrument type
+        IF instrumenttype == "OPTIDX":
+            type = "INDEX_OPTION"
+
+        ELSE IF instrumenttype == "OPTSTK":
+            type = "STOCK_OPTION"
+
+        ELSE:
+            SKIP (not an option)
+
+Step 2: Identify Option Type (CE or PE)
+────────────────────────────────────────
+
+Function IDENTIFY_OPTION_TYPE(symbol):
+    IF symbol ENDS_WITH "CE":
+        RETURN "CALL"
+
+    ELSE IF symbol ENDS_WITH "PE":
+        RETURN "PUT"
+
+    ELSE:
+        RETURN "UNKNOWN"  // Underlying, not an option
+
+Examples:
+    "NIFTY23DEC23500CE" → CALL (CE)
+    "NIFTY23DEC23500PE" → PUT (PE)
+    "RELIANCE23DEC2900CE" → CALL (CE)
+    "RELIANCE23DEC2900PE" → PUT (PE)
+    "NIFTY" → UNKNOWN (underlying itself)
+
+Step 3: Filter by Underlying Name
+──────────────────────────────────
+
+// Index Options (Priority for trading)
+INDEX_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
+
+// F&O Stocks (Optional, if trading stocks)
+FNO_STOCKS = ["RELIANCE", "TCS", "INFY", "HDFC", "ICICIBANK", ...]
+
+Function IS_INDEX_OPTION(name):
+    RETURN name IN INDEX_UNDERLYINGS
+
+Function IS_STOCK_OPTION(name):
+    RETURN name IN FNO_STOCKS
+
+Step 4: Pair CE and PE Tokens
+──────────────────────────────
+
+// Group by unique combination
+key = (underlying_name, expiry_date, strike_price)
+
+Example:
+    key1 = ("NIFTY", "2024-12-26", 23500)
+        ├─ CE token: 99926009
+        └─ PE token: 99926010
+
+    key2 = ("BANKNIFTY", "2024-12-27", 48500)
+        ├─ CE token: 48926009
+        └─ PE token: 48926010
+
+    key3 = ("RELIANCE", "2024-12-28", 2900)
+        ├─ CE token: 35926009
+        └─ PE token: 35926010
+```
+
+**Complete Filtering Code Logic:**
+
+```
+Algorithm: Filter and Categorize Options
+
+INPUT: csv_rows (list of all CSV rows)
+OUTPUT: index_options_map, stock_options_map
+
+INITIALIZE:
+    index_options_map = {}
+    stock_options_map = {}
+
+    INDEX_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX"]
+
+PROCESS:
+    FOR each row IN csv_rows:
+
+        // Step 1: Filter by exchange (NFO only)
+        IF row.exch_seg != "NFO":
+            CONTINUE
+
+        // Step 2: Identify option type
+        option_type = NONE
+        IF row.symbol ENDS_WITH "CE":
+            option_type = "CE"
+        ELSE IF row.symbol ENDS_WITH "PE":
+            option_type = "PE"
+        ELSE:
+            CONTINUE  // Not an option (underlying itself)
+
+        // Step 3: Parse expiry date
+        expiry = PARSE_EXPIRY_DATE(row.expiry)  // "26Dec2024" → "2024-12-26"
+
+        // Step 4: Create unique key
+        key = (row.name, expiry, row.strike)
+
+        // Step 5: Categorize by instrument type
+        IF row.instrumenttype == "OPTIDX":
+            // Index Option
+            IF row.name NOT IN INDEX_UNDERLYINGS:
+                CONTINUE  // Unknown index, skip
+
+            IF key NOT IN index_options_map:
+                index_options_map[key] = {
+                    underlying: row.name,
+                    expiry: expiry,
+                    strike: row.strike,
+                    lot_size: row.lotsize,
+                    tick_size: row.tick_size
+                }
+
+            IF option_type == "CE":
+                index_options_map[key].ce_token = row.token
+                index_options_map[key].ce_symbol = row.symbol
+            ELSE:
+                index_options_map[key].pe_token = row.token
+                index_options_map[key].pe_symbol = row.symbol
+
+        ELSE IF row.instrumenttype == "OPTSTK":
+            // Stock Option
+            IF key NOT IN stock_options_map:
+                stock_options_map[key] = {
+                    underlying: row.name,
+                    expiry: expiry,
+                    strike: row.strike,
+                    lot_size: row.lotsize,
+                    tick_size: row.tick_size
+                }
+
+            IF option_type == "CE":
+                stock_options_map[key].ce_token = row.token
+                stock_options_map[key].ce_symbol = row.symbol
+            ELSE:
+                stock_options_map[key].pe_token = row.token
+                stock_options_map[key].pe_symbol = row.symbol
+
+VALIDATE:
+    // Ensure both CE and PE exist for each key
+    FOR each key IN index_options_map:
+        IF ce_token IS NULL OR pe_token IS NULL:
+            LOG_WARN("Incomplete pair for:", key)
+            DELETE key from index_options_map
+
+    // Same for stock options
+    FOR each key IN stock_options_map:
+        IF ce_token IS NULL OR pe_token IS NULL:
+            LOG_WARN("Incomplete pair for:", key)
+            DELETE key from stock_options_map
+
+RETURN:
+    index_options_map, stock_options_map
+```
+
+**Statistics After Filtering (Example):**
+
+```
+Filtering Results:
+──────────────────
+Total CSV rows: 50,000
+NFO instruments: 35,000
+Index options (OPTIDX): 15,000
+  ├─ NIFTY: 6,000 options (3,000 CE + 3,000 PE)
+  ├─ BANKNIFTY: 4,500 options (2,250 CE + 2,250 PE)
+  ├─ FINNIFTY: 2,000 options (1,000 CE + 1,000 PE)
+  ├─ MIDCPNIFTY: 1,500 options
+  └─ SENSEX: 1,000 options
+
+Stock options (OPTSTK): 20,000
+  ├─ RELIANCE: 500 options (250 CE + 250 PE)
+  ├─ TCS: 400 options (200 CE + 200 PE)
+  ├─ INFY: 400 options (200 CE + 200 PE)
+  └─ Others: 18,700 options
+
+Unique strikes per index:
+  ├─ NIFTY: ~150 strikes per expiry
+  ├─ BANKNIFTY: ~120 strikes per expiry
+  └─ FINNIFTY: ~80 strikes per expiry
+```
+
+#### 3.1.3 Strike Selection Strategy - Which CE/PE to Trade?
+
+**Problem Statement:**
+
+For any underlying (e.g., NIFTY at 23456), there are 100+ CE and 100+ PE options available:
+
+```
+Available NIFTY Options (Current LTP: 23456):
+├─ 23000 CE/PE (Deep ITM/OTM)
+├─ 23100 CE/PE
+├─ 23200 CE/PE
+├─ 23300 CE/PE
+├─ 23350 CE/PE
+├─ 23400 CE/PE ← Close to ATM
+├─ 23450 CE/PE ← ATM (At-The-Money) ⭐ TRADE THIS
+├─ 23500 CE/PE ← Close to ATM
+├─ 23550 CE/PE
+├─ 23600 CE/PE
+├─ 23700 CE/PE
+└─ 24000 CE/PE (Deep OTM/ITM)
+
+Question: Which strike should we trade?
+Answer: ATM (At-The-Money) strike = 23450
+```
+
+**Solution: ATM (At-The-Money) Strategy**
+
+**Why ATM?**
+
+1. ✅ **Maximum liquidity** - Highest trading volume
+2. ✅ **Tight spreads** - Smallest bid-ask spread
+3. ✅ **Balanced risk/reward** - Not too expensive, not too cheap
+4. ✅ **Good delta** - ~0.5 delta, moves with underlying
+5. ✅ **Best for intraday** - Captures price movement efficiently
+
+**Strike Selection Logic:**
+
+```
+Algorithm: Which Strike to Trade?
+
+RULE 1: Always Trade ATM (At-The-Money) Strike
+────────────────────────────────────────────────
+
+ATM Definition:
+  The strike price CLOSEST to the current underlying price
+
+Calculation:
+  1. Get current underlying price (LTP)
+  2. Round to nearest strike increment
+  3. That's your ATM strike
+
+Example 1 (NIFTY):
+  Current LTP: 23456.75
+  Strike increment: 50
+  ATM Strike = ROUND(23456.75 / 50) * 50 = 23450 ✅
+
+Example 2 (BANKNIFTY):
+  Current LTP: 48678.25
+  Strike increment: 100
+  ATM Strike = ROUND(48678.25 / 100) * 100 = 48700 ✅
+
+Example 3 (NIFTY near midpoint):
+  Current LTP: 23475.00 (exactly between 23450 and 23500)
+  ATM Strike = ROUND(23475.00 / 50) * 50 = 23500 ✅
+  (Rounds up at midpoint)
+
+RULE 2: Trade Current Week Expiry (Most Liquid)
+────────────────────────────────────────────────
+
+For maximum liquidity:
+  - NIFTY: Current week Thursday expiry
+  - BANKNIFTY: Current week Wednesday expiry
+  - FINNIFTY: Current week Tuesday expiry
+
+DO NOT trade:
+  ❌ Next week expiry (less liquid)
+  ❌ Monthly expiry (unless no weekly available)
+  ❌ Far month expiry (very illiquid)
+
+RULE 3: CE or PE Based on Strategy Signal
+──────────────────────────────────────────
+
+From your ADX-based strategy:
+
+IF ADX > 25 AND +DI > -DI:
+    direction = "CE"  // Buy Call (bullish)
+    strike = ATM_STRIKE
+    token = GET_TOKEN(underlying, expiry, strike, "CE")
+
+ELSE IF ADX > 25 AND -DI > +DI:
+    direction = "PE"  // Buy Put (bearish)
+    strike = ATM_STRIKE
+    token = GET_TOKEN(underlying, expiry, strike, "PE")
+
+ELSE:
+    NO TRADE  // ADX < 25, no clear trend
+```
+
+**Complete Token Selection Algorithm:**
+
+```
+Algorithm: Select Exact Token for Trading
+
+INPUT:
+  - underlying: "NIFTY" (current price: 23456.75)
+  - strategy_signal: "BUY_CE" (from ADX analysis)
+
+OUTPUT:
+  - token: 99926009 (exact Angel One token to trade)
+
+STEPS:
+
+Step 1: Calculate ATM Strike
+─────────────────────────────
+current_ltp = GET_UNDERLYING_LTP("NIFTY")  // 23456.75
+strike_increment = 50  // for NIFTY
+
+atm_strike = ROUND(current_ltp / strike_increment) * strike_increment
+// atm_strike = ROUND(23456.75 / 50) * 50 = 23450
+
+Step 2: Get Current Week Expiry
+────────────────────────────────
+today = "2024-12-23" (Monday)
+expiry = NEXT_THURSDAY(today)  // "2024-12-26" (Thursday)
+
+Step 3: Determine CE or PE
+───────────────────────────
+IF strategy_signal == "BUY_CE":
+    option_type = "CE"
+ELSE IF strategy_signal == "BUY_PE":
+    option_type = "PE"
+
+Step 4: Load Token Map
+──────────────────────
+tokens = LOAD_JSON("data/tokens/index_options_20241223.json")
+
+Step 5: Find Exact Token
+─────────────────────────
+key = ("NIFTY", "2024-12-26", 23450)
+
+IF option_type == "CE":
+    token = tokens[key].ce_token      // 99926009
+    symbol = tokens[key].ce_symbol    // "NIFTY26DEC23450CE"
+    lot_size = tokens[key].lot_size   // 50
+ELSE:
+    token = tokens[key].pe_token      // 99926010
+    symbol = tokens[key].pe_symbol    // "NIFTY26DEC23450PE"
+    lot_size = tokens[key].lot_size   // 50
+
+Step 6: Validate Token
+──────────────────────
+quote = FETCH_QUOTE(token)  // Call Angel One API
+
+IF quote.ltp == 0 OR quote.volume == 0:
+    LOG_ERROR("Token inactive or illiquid:", token)
+    RETURN NULL
+
+IF quote.oi < 1000:  // Open Interest too low
+    LOG_WARN("Low OI for token:", token)
+    // Consider fallback to ±1 strike
+
+Step 7: Return Selected Token
+──────────────────────────────
+RETURN {
+    token: 99926009,
+    symbol: "NIFTY26DEC23450CE",
+    strike: 23450,
+    lot_size: 50,
+    current_premium: quote.ltp  // e.g., 150.50
+}
+```
+
+**Real-World Example:**
+
+```
+Scenario: NIFTY Trading at 23456.75 on Monday
+
+Step-by-Step:
+─────────────
+1. Current LTP: 23456.75
+2. ATM Strike: 23450 (rounded to nearest 50)
+3. Expiry: This Thursday (26-Dec-2024)
+4. Strategy: ADX = 32, +DI > -DI → BUY CE ✅
+
+Available Options:
+├─ 23400 CE @ ₹185 (ITM, expensive)
+├─ 23450 CE @ ₹150 ⭐ ATM - TRADE THIS
+├─ 23500 CE @ ₹120 (OTM, cheaper but less movement)
+
+Selected Token:
+├─ Token: 99926009
+├─ Symbol: NIFTY26DEC23450CE
+├─ Strike: 23450
+├─ Premium: ₹150
+├─ Lot Size: 50
+└─ Total Cost: ₹7,500 (150 × 50)
+
+Why 23450 CE?
+✅ ATM (maximum liquidity)
+✅ Current week expiry (most liquid)
+✅ Strategy says CE (bullish signal)
+✅ High OI and volume
+✅ Tight bid-ask spread
+```
+
+**ATM Tracking & Dynamic Token Updates:**
+
+```
+Algorithm: When to Update/Change Option Token
+
+═══════════════════════════════════════════════════════════
+CRITICAL RULES:
+═══════════════════════════════════════════════════════════
+Rule 1: NEVER change token while in position (hold until exit)
+Rule 2: UPDATE ATM calculation every 10 seconds (for next trade)
+Rule 3: CHECK trend change every 1 minute (hourly ADX)
+Rule 4: ALWAYS exit before entering opposite direction
+
+═══════════════════════════════════════════════════════════
+Scenario 1: Price Moves (ATM Strike Changes)
+═══════════════════════════════════════════════════════════
+
+MONITOR underlying price EVERY 10 SECONDS
+
+Current Situation:
+├─ Open Position: NIFTY 23450 CE @ ₹150 (bought at 9:30 AM)
+├─ Entry Price: 23,456
+└─ Now: NIFTY moves to 23,520 (moved up 64 points)
+
+ATM Check:
+├─ Old ATM: 23450 (1 strike away)
+├─ New ATM: 23500 (current ATM)
+└─ Price moved >1 strike ✅
+
+Action Plan:
+┌──────────────────────────────────────────┐
+│ If IN position:                          │
+│   ✅ HOLD current 23450 CE               │
+│   ✅ Do NOT exit/change                  │
+│   ✅ Update ATM to 23500 (for future)    │
+│   ✅ Subscribe to 23500 CE data          │
+│   ✅ Wait for exit signal                │
+│                                          │
+│ If NOT in position (ready for entry):   │
+│   ✅ Use NEW ATM: 23500                  │
+│   ✅ Next entry: NIFTY 23500 CE          │
+└──────────────────────────────────────────┘
+
+Real Example:
+─────────────
+09:30 AM: BUY NIFTY 23450 CE @ ₹150
+10:00 AM: Price → 23,520 (ATM now 23500)
+         Action: HOLD 23450 CE (don't change!)
+11:00 AM: Exit signal hits
+         Action: SELL 23450 CE @ ₹180
+11:05 AM: New entry signal
+         Action: BUY NIFTY 23500 CE @ ₹170 (NEW ATM!)
+
+Key Point: Always use CURRENT ATM for NEW entries,
+           but don't exit existing positions just because ATM changed.
+
+═══════════════════════════════════════════════════════════
+Scenario 2: Trend Reversal (CE to PE or PE to CE)
+═══════════════════════════════════════════════════════════
+
+CHECK trend EVERY 1 MINUTE (using HOURLY ADX)
+
+Current Situation:
+├─ Open Position: NIFTY 23450 CE @ ₹150
+├─ Entry: Daily bullish + Hourly bullish
+└─ Now: Hourly trend reversing
+
+Hourly ADX Check (Every 1 Min):
+────────────────────────────────
+10:00 AM Check:
+├─ Daily ADX: 32, +DI > -DI (still bullish) ✅
+├─ Hourly ADX: 30, +DI > -DI (still bullish) ✅
+└─ Action: HOLD CE position
+
+11:00 AM Check:
+├─ Daily ADX: 32, +DI > -DI (still bullish) ✅
+├─ Hourly ADX: 28, -DI > +DI (BEARISH now!) ⚠️
+└─ Action: TREND CHANGED!
+
+Position Change Flow:
+─────────────────────
+Step 1: EXIT current position FIRST
+  → SELL NIFTY 23450 CE @ ₹165
+  → Wait for order confirmation
+  → Close position completely
+
+Step 2: WAIT for clean slate
+  → Ensure no open positions
+  → Check P&L booked
+  → Verify balance updated
+
+Step 3: Calculate NEW ATM
+  → Current NIFTY: 23,489
+  → New ATM: 23500
+  → New direction: PE (bearish)
+
+Step 4: ENTER new position
+  → BUY NIFTY 23500 PE @ ₹140
+  → Place LIMIT order
+  → Wait for fill confirmation
+
+═══════════════════════════════════════════════════════════
+Scenario 3: Daily Trend Changes (Major Reversal)
+═══════════════════════════════════════════════════════════
+
+CHECK daily trend ONCE per day (9:15 AM)
+
+Next Day Scenario:
+──────────────────
+Monday 9:15 AM:
+├─ Daily ADX: 32, +DI > -DI (Bullish)
+└─ Trading: CE options
+
+Tuesday 9:15 AM:
+├─ Daily ADX: 35, -DI > +DI (BEARISH now!) 🔄
+└─ Trading: Switch to PE options from today
+
+Action:
+1. If holding CE from Monday:
+   → Exit CE position first
+   → Book profit/loss
+
+2. New direction = PE:
+   → Look for hourly PE entry signals
+   → Use ATM PE strikes
+   → Trade PE only today
+
+═══════════════════════════════════════════════════════════
+Update Frequency Summary
+═══════════════════════════════════════════════════════════
+
+┌─────────────────────┬──────────────┬─────────────────────┐
+│ Check               │ Frequency    │ Action              │
+├─────────────────────┼──────────────┼─────────────────────┤
+│ Daily ADX           │ Once/day     │ Set CE or PE        │
+│                     │ (9:15 AM)    │ direction           │
+├─────────────────────┼──────────────┼─────────────────────┤
+│ Hourly ADX          │ Every 1 min  │ Trigger position    │
+│                     │              │ change if needed    │
+├─────────────────────┼──────────────┼─────────────────────┤
+│ ATM Strike          │ Every 10 sec │ Update for next     │
+│                     │              │ entry (not current) │
+├─────────────────────┼──────────────┼─────────────────────┤
+│ Stop Loss           │ Real-time    │ Exit immediately    │
+│                     │              │ if hit              │
+├─────────────────────┼──────────────┼─────────────────────┤
+│ VIX Spike           │ Real-time    │ Exit all if >30     │
+└─────────────────────┴──────────────┴─────────────────────┘
+
+═══════════════════════════════════════════════════════════
+Critical Rules to Avoid Mistakes
+═══════════════════════════════════════════════════════════
+
+❌ NEVER: Hold both CE and PE at same time
+✅ ALWAYS: Exit first, then enter opposite
+
+❌ NEVER: Change token mid-position (because ATM changed)
+✅ ALWAYS: Hold existing strike until exit signal
+
+❌ NEVER: Enter new position before exit confirmed
+✅ ALWAYS: Wait for exit order fill confirmation
+
+❌ NEVER: Ignore daily trend and trade on hourly only
+✅ ALWAYS: Both daily and hourly must align
+
+❌ NEVER: Keep same direction if daily trend changes
+✅ ALWAYS: Check daily trend every morning (9:15 AM)
+```
+
+**Quick Decision Matrix: When to Change Token**
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│           SITUATION → ACTION MATRIX                           │
+└───────────────────────────────────────────────────────────────┘
+
+╔════════════════════════╦══════════════╦═════════════════════╗
+║ Situation              ║ In Position? ║ Action              ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ Price moves 50 points  ║ YES          ║ HOLD current token  ║
+║ (ATM changed)          ║              ║ Update ATM for next ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ Use NEW ATM token   ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ Hourly trend reverses  ║ YES          ║ EXIT current first  ║
+║ (CE → PE or PE → CE)   ║              ║ Then BUY opposite   ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ Wait for entry      ║
+║                        ║              ║ signal              ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ Daily trend changes    ║ YES          ║ EXIT at 9:15 AM     ║
+║ (next day reversal)    ║              ║ Switch direction    ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ Trade new direction ║
+║                        ║              ║ from today          ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ Stop loss hit          ║ YES          ║ EXIT immediately    ║
+║                        ║              ║ (market order)      ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ No action           ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ VIX spikes > 30        ║ YES          ║ EXIT all positions  ║
+║                        ║              ║ immediately         ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ Pause new trades    ║
+╠════════════════════════╬══════════════╬═════════════════════╣
+║ Target profit hit      ║ YES          ║ EXIT (book profit)  ║
+║                        ║              ║ Wait for new signal ║
+║                        ╠══════════════╬═════════════════════╣
+║                        ║ NO           ║ No action           ║
+╚════════════════════════╩══════════════╩═════════════════════╝
+
+Key Principles:
+───────────────
+1️⃣  Update ATM calculation continuously (every 10 sec)
+2️⃣  Don't exit just because ATM changed
+3️⃣  Exit ONLY on: signal change, stop loss, target, or VIX spike
+4️⃣  ALWAYS use CURRENT ATM for NEW entries
+5️⃣  NEVER hold CE and PE together
+```
+
+**Complete Day Timeline Example (CORRECTED):**
+
+```
+Full Trading Day: When Tokens Change (Daily = Bullish)
+───────────────────────────────────────────────────────
+
+09:15 AM - Daily Analysis
+├─ Daily ADX: 32, +DI > -DI (Bullish)
+├─ Daily Direction: CE ONLY for today ✅
+└─ Set: Trade CE only, NO PE today
+
+09:20 AM - Hourly Check
+├─ Hourly ADX: 28, +DI > -DI (Bullish)
+├─ Hourly aligned with daily ✅
+└─ Ready to trade CE
+
+09:30 AM - Entry Signal
+├─ NIFTY: 23,456
+├─ ATM: 23450
+├─ Crossover: +DI crosses above -DI ✅
+└─ ACTION: BUY NIFTY26DEC23450CE @ ₹150
+
+10:00 AM - Price moves up
+├─ NIFTY: 23,523 (+67 points)
+├─ ATM: NOW 23500 (moved 1 strike!) ⚠️
+├─ Hourly: Still bullish ✅
+├─ Current position: 23450 CE (in profit)
+└─ ACTION: HOLD 23450 CE ✅
+           Update ATM to 23500 (for next trade)
+           Subscribe to 23500 CE data
+
+10:30 AM - Continue monitoring
+├─ NIFTY: 23,545
+├─ ATM: 23550 (moved again)
+├─ Hourly: Still bullish
+└─ ACTION: HOLD 23450 CE ✅ (don't exit!)
+           Update ATM to 23550
+
+11:00 AM - HOURLY CONFLICTS! ⚠️
+├─ NIFTY: 23,512 (dropped)
+├─ ATM: 23500
+├─ Daily: Still bullish (32, +DI > -DI) ✅
+├─ Hourly: NOW bearish! (28, -DI > +DI) ❌
+├─ Conflict: Daily says CE, Hourly says PE
+└─ ACTION:
+           Step 1: SELL 23450 CE @ ₹180 ✅
+           Step 2: Book profit: +₹1,500
+           Step 3: DO NOT buy PE! ❌
+           Step 4: WAIT for hourly to align back ⏳
+
+11:30 AM - Still Waiting (No Position)
+├─ NIFTY: 23,478
+├─ ATM: Still 23500
+├─ Daily: Bullish ✅
+├─ Hourly: Still bearish ❌
+└─ ACTION: WAIT ⏳ (NO TRADE, no position)
+
+12:00 PM - Price drops more
+├─ NIFTY: 23,389
+├─ ATM: NOW 23400
+├─ Daily: Bullish ✅
+├─ Hourly: Still bearish ❌
+└─ ACTION: WAIT ⏳ (NO TRADE)
+           Update ATM to 23400 (for future)
+
+01:00 PM - Hourly Aligns Back! ✅
+├─ NIFTY: 23,423
+├─ ATM: 23400
+├─ Daily: Bullish ✅
+├─ Hourly: NOW bullish! (ADX 26, +DI > -DI) ✅
+├─ Both aligned again ✅
+└─ Ready to trade CE again
+
+01:15 PM - Re-entry Signal
+├─ NIFTY: 23,445
+├─ ATM: 23450
+├─ Crossover: Price crosses above key level ✅
+└─ ACTION: BUY NIFTY26DEC23450CE @ ₹165 ✅
+           (Same direction CE, new strike)
+
+02:30 PM - Continue in CE
+├─ NIFTY: 23,489
+├─ ATM: Still 23450
+├─ Hourly: Still bullish ✅
+├─ Current P&L: +₹1,200
+└─ ACTION: HOLD 23450 CE ✅
+
+03:15 PM - Near close
+├─ NIFTY: 23,512
+├─ Position: 23450 CE
+├─ Current value: ₹185 (+12%)
+└─ ACTION: Prepare to square off
+
+03:25 PM - Square off
+├─ Time: 5 minutes to close
+├─ Rule: No overnight positions
+└─ ACTION: SELL 23450 CE @ ₹186 ✅
+           Book profit: +₹1,050
+           Day complete
+
+═══════════════════════════════════════════════════════════
+Summary of Token Changes Today (CORRECTED):
+═══════════════════════════════════════════════════════════
+
+Total Trades: 2 (BOTH CE, NO PE!) ✅
+
+Trade 1: NIFTY 23450 CE (9:30 AM - 11:00 AM)
+├─ Reason: Daily + Hourly both bullish
+├─ Entry: ₹150
+├─ Exit: ₹180 (hourly conflict)
+└─ P&L: +₹1,500
+
+No Trade Period: 11:00 AM - 1:15 PM ⏳
+├─ Reason: Hourly bearish (conflicts with daily)
+├─ Did NOT trade PE ❌
+└─ Waited for hourly to align back with daily
+
+Trade 2: NIFTY 23450 CE (1:15 PM - 3:25 PM)
+├─ Reason: Hourly aligned back with daily
+├─ Entry: ₹165
+├─ Exit: ₹186 (square off)
+└─ P&L: +₹1,050
+
+Total Day P&L: +₹2,550 (before charges)
+
+Key Observations (CORRECTED):
+──────────────────────────────
+✅ Daily set direction: CE ONLY for entire day
+✅ Exited when hourly conflicted
+❌ Did NOT switch to PE (daily was bullish!)
+✅ Waited for hourly to align back
+✅ Re-entered CE when aligned again
+✅ Changed strike when ATM moved (for new entry)
+✅ HELD strike when ATM changed mid-position
+✅ Only 2 trades (both same direction)
+```
+
+**Fallback Strategy (If ATM Not Available):**
+
+```
+Priority Order:
+1. ATM strike ⭐ (always preferred)
+2. ATM + 1 strike (if ATM illiquid)
+3. ATM - 1 strike (if ATM illiquid)
+4. Skip trade (if no liquid strikes available)
+
+Example:
+ATM = 23450
+1st choice: 23450 CE ✅
+2nd choice: 23500 CE (if 23450 has low volume)
+3rd choice: 23400 CE (if both above unavailable)
+```
+
+#### 3.1.3.1 CE vs PE Decision Logic - Which Side to Trade?
+
+**The Million Dollar Question: Should I trade CE or PE?**
+
+```
+Answer: Let ADX + Directional Indicators decide
+
+Simple Rule:
+├─ Strong uptrend (+DI > -DI) → Trade CE (Call) 📈
+├─ Strong downtrend (-DI > +DI) → Trade PE (Put) 📉
+└─ No clear trend (ADX < 25) → NO TRADE ❌
+```
+
+**Complete Decision Algorithm:**
+
+```
+Algorithm: CE or PE Decision
+
+INPUT:
+  - underlying: "NIFTY" or "BANKNIFTY" or Stock name
+  - bars: Last 30 DAILY bars for underlying ⭐ IMPORTANT
+
+OUTPUT:
+  - decision: "BUY_CE", "BUY_PE", or "NO_TRADE"
+
+CRITICAL: Multi-Timeframe Strategy
+───────────────────────────────────
+DAILY Timeframe → Determine Trend Direction (CE or PE)
+HOURLY Timeframe → Entry/Exit Signals
+
+Timeframe Usage:
+├─ DAILY (1D): Trend direction (which side: CE or PE?)
+└─ HOURLY (1H): Entry/exit timing (when to trade?)
+
+Why Multi-Timeframe?
+✅ Daily: Filters out noise, reliable trend
+✅ Hourly: Better entry/exit timing
+✅ Avoids false signals from intraday whipsaws
+✅ Professional institutional approach
+
+STEPS:
+
+Step 1: Calculate Daily ADX (Trend Direction)
+──────────────────────────────────────────────
+// Use DAILY bars to determine CE or PE
+daily_bars = GET_DAILY_BARS(underlying, count=30)  // Last 30 days
+daily_adx = CALCULATE_ADX(daily_bars, period=14)
+daily_plus_di = CALCULATE_PLUS_DI(daily_bars, period=14)
+daily_minus_di = CALCULATE_MINUS_DI(daily_bars, period=14)
+
+// Daily ADX tells us: Is there a trend?
+// ADX > 25: Strong trend exists ✅
+// ADX < 20: Weak/no trend ❌
+
+Step 2: Determine Direction from Daily
+───────────────────────────────────────
+IF daily_adx < 25:
+    RETURN "NO_TRADE"  // No clear daily trend
+
+IF daily_plus_di > daily_minus_di:
+    trend_direction = "CE"  // Daily uptrend
+ELSE IF daily_minus_di > daily_plus_di:
+    trend_direction = "PE"  // Daily downtrend
+ELSE:
+    RETURN "NO_TRADE"  // Unclear direction
+
+Step 3: Wait for Hourly Entry Signal
+─────────────────────────────────────
+// Now use HOURLY bars for entry timing
+hourly_bars = GET_HOURLY_BARS(underlying, count=30)  // Last 30 hours
+hourly_adx = CALCULATE_ADX(hourly_bars, period=14)
+hourly_plus_di = CALCULATE_PLUS_DI(hourly_bars, period=14)
+hourly_minus_di = CALCULATE_MINUS_DI(hourly_bars, period=14)
+
+// Hourly must CONFIRM daily trend
+IF trend_direction == "CE":
+    // Daily says CE, check hourly confirmation
+    IF hourly_adx >= 25 AND hourly_plus_di > hourly_minus_di:
+        RETURN "BUY_CE"  // Both daily and hourly bullish ✅
+    ELSE:
+        RETURN "WAIT"  // Daily bullish but hourly not ready
+
+ELSE IF trend_direction == "PE":
+    // Daily says PE, check hourly confirmation
+    IF hourly_adx >= 25 AND hourly_minus_di > hourly_plus_di:
+        RETURN "BUY_PE"  // Both daily and hourly bearish ✅
+    ELSE:
+        RETURN "WAIT"  // Daily bearish but hourly not ready
+
+Step 3: Decision Matrix
+───────────────────────
+
+IF adx < 20:
+    // No clear trend, too risky
+    RETURN "NO_TRADE"
+    LOG_INFO("ADX too low:", adx, "- No clear trend")
+
+ELSE IF adx >= 20 AND adx < 25:
+    // Trend forming but not strong enough
+    RETURN "NO_TRADE"
+    LOG_INFO("ADX moderate:", adx, "- Wait for stronger trend")
+
+ELSE IF adx >= 25:
+    // Strong trend exists, now check direction
+
+    IF plus_di > minus_di:
+        // Bullish trend (+DI dominates)
+        RETURN "BUY_CE"
+        LOG_INFO("Bullish signal: ADX=", adx, "+DI=", plus_di, "-DI=", minus_di)
+
+    ELSE IF minus_di > plus_di:
+        // Bearish trend (-DI dominates)
+        RETURN "BUY_PE"
+        LOG_INFO("Bearish signal: ADX=", adx, "+DI=", minus_di, "-DI=", minus_di)
+
+    ELSE:
+        // Equal DI, no clear direction
+        RETURN "NO_TRADE"
+        LOG_INFO("Conflicting signals: +DI ≈ -DI")
+
+Step 4: Additional Filters (Optional but Recommended)
+──────────────────────────────────────────────────────
+
+// Filter 1: Volume Check
+volume_avg = CALCULATE_VOLUME_AVG(bars, period=20)
+current_volume = bars[-1].volume
+
+IF current_volume < (volume_avg * 0.8):
+    RETURN "NO_TRADE"
+    LOG_INFO("Volume too low, skip trade")
+
+// Filter 2: RSI Extremes (Avoid overbought/oversold)
+rsi = CALCULATE_RSI(bars, period=14)
+
+IF decision == "BUY_CE" AND rsi > 70:
+    RETURN "NO_TRADE"
+    LOG_WARN("RSI overbought:", rsi, "- Skip CE")
+
+IF decision == "BUY_PE" AND rsi < 30:
+    RETURN "NO_TRADE"
+    LOG_WARN("RSI oversold:", rsi, "- Skip PE")
+
+// Filter 3: VIX Check
+vix = GET_VIX()
+
+IF vix > 30:
+    RETURN "NO_TRADE"
+    LOG_WARN("VIX too high:", vix, "- Market too volatile")
+
+RETURN decision
+```
+
+**Visual Decision Matrix:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    ADX DECISION MATRIX                   │
+└─────────────────────────────────────────────────────────┘
+
+ADX < 20:
+├─ Trend: WEAK/RANGING
+└─ Action: NO TRADE ❌
+   Reason: No clear trend, choppy market
+
+ADX 20-25:
+├─ Trend: FORMING
+└─ Action: NO TRADE ⚠️
+   Reason: Trend not strong enough yet
+
+ADX 25-40:
+├─ Trend: STRONG ✅
+├─ Check Direction:
+│  ├─ IF +DI > -DI → Trade CE 📈 (Bullish)
+│  └─ IF -DI > +DI → Trade PE 📉 (Bearish)
+
+ADX > 40:
+├─ Trend: VERY STRONG 🔥
+├─ Check Direction:
+│  ├─ IF +DI > -DI → Trade CE 📈 (Strong bullish)
+│  └─ IF -DI > +DI → Trade PE 📉 (Strong bearish)
+└─ Caution: Trend may be exhausting, watch for reversal
+```
+
+**Multi-Timeframe Strategy Example:**
+
+```
+Complete Example: How Daily + Hourly Work Together
+───────────────────────────────────────────────────
+
+Morning Analysis (9:15 AM):
+───────────────────────────
+
+Step 1: Check DAILY Trend (30 days)
+────────────────────────────────────
+NIFTY Daily Data:
+├─ Daily ADX: 32 ✅ (Strong trend)
+├─ Daily +DI: 28
+├─ Daily -DI: 16
+└─ Result: +DI > -DI → Daily UPTREND
+
+Decision: Trend direction = CE ✅
+But WAIT for hourly confirmation!
+
+Step 2: Check HOURLY Signal (9:15 AM)
+──────────────────────────────────────
+NIFTY Hourly Data:
+├─ Hourly ADX: 22 ⚠️ (Below 25)
+├─ Hourly +DI: 20
+├─ Hourly -DI: 18
+└─ Result: Hourly not ready
+
+Decision: WAIT ⏳
+Daily says CE, but hourly trend not formed yet
+
+Step 3: Wait for Hourly Confirmation
+─────────────────────────────────────
+
+10:00 AM Check:
+├─ Hourly ADX: 26 ✅ (Above 25 now!)
+├─ Hourly +DI: 28
+├─ Hourly -DI: 18
+└─ Result: Hourly +DI > -DI
+
+Decision: BUY CE NOW! ✅
+├─ Daily: Bullish (ADX 32, +DI > -DI)
+├─ Hourly: Bullish (ADX 26, +DI > -DI)
+└─ Both aligned!
+
+Action: BUY NIFTY26DEC23450CE @ ₹150
+
+Why This Works:
+───────────────
+✅ Daily trend filters noise (big picture)
+✅ Hourly confirms momentum (timing)
+✅ Both aligned = high probability trade
+✅ Avoids false intraday signals
+```
+
+**Multi-Timeframe Decision Matrix:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│           DAILY vs HOURLY COMBINATIONS               │
+└──────────────────────────────────────────────────────┘
+
+Scenario 1: Both Bullish (IDEAL) ✅
+├─ Daily: ADX 32, +DI > -DI (Bullish)
+├─ Hourly: ADX 26, +DI > -DI (Bullish)
+└─ Action: BUY CE ✅ (High confidence)
+
+Scenario 2: Daily Bullish, Hourly Weak ⏳
+├─ Daily: ADX 32, +DI > -DI (Bullish)
+├─ Hourly: ADX 18, weak trend
+└─ Action: WAIT ⏳ (Don't trade yet)
+
+Scenario 3: Daily Bullish, Hourly Bearish ❌
+├─ Daily: ADX 32, +DI > -DI (Bullish)
+├─ Hourly: ADX 28, -DI > +DI (Bearish)
+└─ Action: NO TRADE ❌ (Conflicting signals)
+
+Scenario 4: Both Bearish (IDEAL) ✅
+├─ Daily: ADX 35, -DI > +DI (Bearish)
+├─ Hourly: ADX 27, -DI > +DI (Bearish)
+└─ Action: BUY PE ✅ (High confidence)
+
+Scenario 5: Daily Weak ❌
+├─ Daily: ADX 18 (Weak trend)
+├─ Hourly: Doesn't matter
+└─ Action: NO TRADE ❌ (No daily trend)
+```
+
+**Timeframe Summary:**
+
+```
+┌─────────────────────────────────────────────────┐
+│        TIMEFRAME USAGE REFERENCE                 │
+└─────────────────────────────────────────────────┘
+
+DAILY Timeframe (1D):
+├─ Purpose: Determine trend direction
+├─ Data: Last 30 daily bars
+├─ Indicators: ADX, +DI, -DI (14-period)
+├─ Output: CE (bullish) or PE (bearish) or NO_TRADE
+└─ Update: Once per day (morning check)
+
+HOURLY Timeframe (1H):
+├─ Purpose: Entry/exit timing
+├─ Data: Last 30 hourly bars
+├─ Indicators: ADX, +DI, -DI (14-period)
+├─ Output: Confirm daily + timing
+└─ Update: Every hour
+
+Trade Decision Flow:
+────────────────────
+1. Check DAILY → Get direction (CE or PE)
+2. Check HOURLY → Confirm + find entry
+3. Both aligned → TRADE ✅
+4. Not aligned → WAIT ⏳
+```
+
+**Real-World Multi-Timeframe Examples:**
+
+```
+Example 1: Perfect Bullish Setup (Trade CE)
+────────────────────────────────────────────
+
+NIFTY Monday 9:15 AM:
+
+DAILY Check:
+├─ Daily ADX: 32 ✅ (Strong trend)
+├─ Daily +DI: 28 📈
+├─ Daily -DI: 16 📉
+└─ Result: Daily UPTREND → Look for CE
+
+HOURLY Check (9:15 AM):
+├─ Hourly ADX: 22 ⚠️ (Below threshold)
+└─ Result: WAIT (not ready yet)
+
+HOURLY Check (10:00 AM):
+├─ Hourly ADX: 26 ✅ (Above 25)
+├─ Hourly +DI: 28 📈
+├─ Hourly -DI: 18 📉
+└─ Result: Hourly confirms UPTREND ✅
+
+Decision: BUY CE NOW! ✅
+├─ Daily: Bullish ✅
+├─ Hourly: Bullish ✅
+└─ Both aligned!
+
+Action: BUY NIFTY26DEC23450CE @ ₹150
+
+Example 2: Perfect Bearish Setup (Trade PE)
+────────────────────────────────────────────
+
+NIFTY Tuesday 9:15 AM:
+
+DAILY Check:
+├─ Daily ADX: 35 ✅ (Strong trend)
+├─ Daily +DI: 15 📈
+├─ Daily -DI: 29 📉
+└─ Result: Daily DOWNTREND → Look for PE
+
+HOURLY Check (9:15 AM):
+├─ Hourly ADX: 28 ✅ (Above 25)
+├─ Hourly +DI: 16 📈
+├─ Hourly -DI: 30 📉
+└─ Result: Hourly confirms DOWNTREND ✅
+
+Decision: BUY PE NOW! ✅
+├─ Daily: Bearish ✅
+├─ Hourly: Bearish ✅
+└─ Both aligned from start!
+
+Action: BUY NIFTY26DEC23500PE @ ₹140
+
+Example 3: No Trade (Weak Daily Trend)
+───────────────────────────────────────
+
+NIFTY Wednesday 2:00 PM:
+
+DAILY Check:
+├─ Daily ADX: 18 ❌ (Weak trend)
+├─ Daily +DI: 20
+├─ Daily -DI: 22
+└─ Result: No clear daily trend
+
+Decision: NO TRADE ❌
+├─ Daily: Weak (ADX < 25)
+└─ Don't check hourly (daily must be strong first)
+
+Why No Trade?
+- No clear daily trend (ADX only 18)
+- Market ranging/choppy
+- High risk of false signals
+
+Action:
+WAIT for daily ADX > 25
+
+Example 4: No Trade (Conflicting Signals)
+──────────────────────────────────────────
+
+NIFTY Thursday 11:00 AM:
+
+DAILY Check:
+├─ Daily ADX: 30 ✅ (Strong trend)
+├─ Daily +DI: 27 📈
+├─ Daily -DI: 17 📉
+└─ Result: Daily UPTREND → Look for CE
+
+HOURLY Check (11:00 AM):
+├─ Hourly ADX: 28 ✅ (Strong)
+├─ Hourly +DI: 18 📈
+├─ Hourly -DI: 30 📉
+└─ Result: Hourly DOWNTREND ⚠️
+
+Decision: NO TRADE ❌
+├─ Daily: Bullish (wants CE) ✅
+├─ Hourly: Bearish (wants PE) ❌
+└─ Conflicting signals!
+
+Why No Trade?
+- Daily says BUY CE (uptrend)
+- Hourly says BUY PE (downtrend)
+- Conflicting signals = high risk
+- Wait for both to align
+
+Action:
+WAIT for clearer direction
+```
+
+**Indicator Calculation (From Your Doc):**
+
+```
+ADX Calculation:
+────────────────
+1. Calculate True Range (TR)
+2. Calculate +DM and -DM (directional movement)
+3. Smooth TR, +DM, -DM over 14 periods
+4. Calculate +DI = (+DM / TR) × 100
+5. Calculate -DI = (-DM / TR) × 100
+6. Calculate DX = |+DI - -DI| / (+DI + -DI) × 100
+7. Calculate ADX = 14-period average of DX
+
+Use library: `ta` or `yata` (DO NOT implement manually)
+```
+
+**Decision Summary Table:**
+
+| ADX | +DI | -DI | +DI vs -DI | Decision        | Reasoning            |
+| --- | --- | --- | ---------- | --------------- | -------------------- |
+| 32  | 28  | 16  | +DI > -DI  | **BUY CE** ✅   | Strong bullish trend |
+| 35  | 15  | 29  | -DI > +DI  | **BUY PE** ✅   | Strong bearish trend |
+| 18  | 20  | 22  | N/A        | **NO TRADE** ❌ | Weak trend           |
+| 26  | 23  | 22  | +DI ≈ -DI  | **NO TRADE** ⚠️ | Unclear direction    |
+| 42  | 35  | 18  | +DI > -DI  | **BUY CE** 🔥   | Very strong bullish  |
+| 38  | 16  | 32  | -DI > +DI  | **BUY PE** 🔥   | Very strong bearish  |
+
+**Quick Decision Flowchart:**
+
+```
+Start
+  ↓
+Is ADX ≥ 25?
+  ├─ NO → NO TRADE ❌ (Weak trend)
+  └─ YES ↓
+         Is +DI > -DI?
+           ├─ YES → BUY CE ✅ (Bullish)
+           ├─ NO ↓
+           │    Is -DI > +DI?
+           │      ├─ YES → BUY PE ✅ (Bearish)
+           │      └─ NO → NO TRADE ⚠️ (Unclear)
+```
+
+**Additional Confirmation Filters:**
+
+```
+1. Volume Confirmation
+──────────────────────
+IF volume < 80% of average:
+    → Skip trade (low conviction)
+
+2. RSI Filter
+─────────────
+IF BUY CE signal AND RSI > 70:
+    → Skip (overbought, risk of reversal)
+
+IF BUY PE signal AND RSI < 30:
+    → Skip (oversold, risk of reversal)
+
+3. VIX Filter
+─────────────
+IF VIX > 30:
+    → Skip all trades (too volatile)
+
+4. Time of Day
+──────────────
+IF time < 9:30 AM:
+    → Skip (wait for market to settle)
+
+IF time > 3:00 PM:
+    → Skip (avoid expiry day risks)
+```
+
+**Common Mistakes to Avoid:**
+
+```
+❌ WRONG: "NIFTY is going up, buy CE"
+✅ RIGHT: "ADX = 32, +DI = 28 > -DI = 16, buy CE"
+
+❌ WRONG: Trade based on gut feeling
+✅ RIGHT: Trade based on indicator signals
+
+❌ WRONG: Trade when ADX < 20 (weak trend)
+✅ RIGHT: Wait for ADX ≥ 25 (strong trend)
+
+❌ WRONG: Trade both CE and PE together (hedging)
+✅ RIGHT: Trade only one direction at a time
+
+❌ WRONG: Ignore VIX and volume
+✅ RIGHT: Check all confirmation filters
+```
+
+#### 3.1.3.2 When Hourly Conflicts with Daily (Market Updates)
+
+**Problem: Daily says CE, but Hourly becomes bearish**
+
+```
+Scenario:
+─────────
+9:15 AM: Daily bullish (+DI > -DI), set direction = CE for today
+9:30 AM: Hourly bullish, buy NIFTY 23450 CE
+11:00 AM: Hourly becomes bearish (-DI > +DI)
+Question: Do we switch to PE? Answer: NO! ❌
+```
+
+**Solution: Exit and WAIT for Hourly to Align Back with Daily**
+
+```
+Algorithm: Handle Hourly Conflict with Daily
+
+CRITICAL RULE: Daily trend is MASTER
+                Only trade in daily direction
+                NEVER trade against daily trend
+
+Step 1: Set Daily Direction (9:15 AM)
+──────────────────────────────────────
+daily_adx = CALCULATE_DAILY_ADX()
+daily_plus_di = CALCULATE_DAILY_PLUS_DI()
+daily_minus_di = CALCULATE_DAILY_MINUS_DI()
+
+IF daily_adx >= 25:
+    IF daily_plus_di > daily_minus_di:
+        daily_direction = "CE"  // Trade CE ONLY today
+    ELSE IF daily_minus_di > daily_plus_di:
+        daily_direction = "PE"  // Trade PE ONLY today
+ELSE:
+    daily_direction = "NO_TRADE"  // Skip today
+
+Step 2: Monitor Hourly Alignment (Every 1 Minute)
+──────────────────────────────────────────────────
+WHILE market_open:
+    EVERY 1 MINUTE:
+        // Get hourly indicators
+        hourly_adx = CALCULATE_HOURLY_ADX()
+        hourly_plus_di = CALCULATE_HOURLY_PLUS_DI()
+        hourly_minus_di = CALCULATE_HOURLY_MINUS_DI()
+
+        // Check if hourly aligns with daily
+        hourly_aligned = CHECK_ALIGNMENT(
+            daily_direction,
+            hourly_adx,
+            hourly_plus_di,
+            hourly_minus_di
+        )
+
+        // Take action based on alignment
+        IF hourly_aligned:
+            ALLOW_TRADING()
+        ELSE:
+            IF in_position:
+                EXIT_POSITION()  // Exit and wait
+            ELSE:
+                WAIT()  // Don't enter until aligned
+
+Step 3: Alignment Check Logic
+──────────────────────────────
+Function CHECK_ALIGNMENT(daily_dir, h_adx, h_plus, h_minus):
+
+    // Case 1: Daily is CE (bullish)
+    IF daily_dir == "CE":
+        // Hourly must also be bullish
+        IF h_adx >= 25 AND h_plus > h_minus:
+            RETURN TRUE  // Aligned ✅
+        ELSE:
+            RETURN FALSE  // Conflict ❌ (exit and wait)
+
+    // Case 2: Daily is PE (bearish)
+    ELSE IF daily_dir == "PE":
+        // Hourly must also be bearish
+        IF h_adx >= 25 AND h_minus > h_plus:
+            RETURN TRUE  // Aligned ✅
+        ELSE:
+            RETURN FALSE  // Conflict ❌ (exit and wait)
+
+Step 4: Position Management
+────────────────────────────
+Function MANAGE_POSITION(aligned, daily_dir):
+
+    // Case 1: Holding position, hourly conflicts
+    IF in_position AND NOT aligned:
+        LOG_WARN("Hourly conflicts with daily, exiting...")
+        EXIT_POSITION()
+        current_position = NULL
+        WAIT_FOR_REALIGNMENT()
+
+    // Case 2: No position, hourly aligned with daily
+    ELSE IF NOT in_position AND aligned:
+        // Wait for crossover signal
+        IF CROSSOVER_SIGNAL_DETECTED(daily_dir):
+            ENTER_POSITION(daily_dir)
+
+    // Case 3: No position, hourly NOT aligned
+    ELSE IF NOT in_position AND NOT aligned:
+        LOG_INFO("Waiting for hourly to align with daily...")
+        WAIT()  // Don't enter any trade
+```
+
+**Market Update Frequency & Triggers:**
+
+```
+Algorithm: When to Check for Signal Changes
+
+1. Regular Monitoring (Every 1 Minute)
+──────────────────────────────────────
+SCHEDULE every 1 minute:
+    bars = GET_LATEST_BARS("NIFTY", timeframe="1h", count=30)
+
+    adx = CALCULATE_ADX(bars, period=14)
+    plus_di, minus_di = CALCULATE_DI(bars, period=14)
+
+    current_signal = DETERMINE_SIGNAL(adx, plus_di, minus_di)
+
+    IF current_signal != previous_signal:
+        HANDLE_SIGNAL_CHANGE(current_signal)
+
+2. VIX Spike Trigger (Immediate)
+─────────────────────────────────
+ON vix_update:
+    IF vix > 30 OR vix_spike > 5_points:
+        LOG_WARN("VIX spike detected:", vix)
+        EXIT_ALL_POSITIONS()  // Emergency exit
+        PAUSE_TRADING()
+
+3. Price Movement Trigger (Every 10 seconds)
+─────────────────────────────────────────────
+SCHEDULE every 10 seconds:
+    current_price = GET_UNDERLYING_LTP("NIFTY")
+
+    // Check if ATM changed
+    new_atm = CALCULATE_ATM(current_price)
+    IF new_atm != current_atm:
+        LOG_INFO("ATM changed:", current_atm, "→", new_atm)
+        UPDATE_ATM_SUBSCRIPTION(new_atm)
+        // Don't exit position, just update for next trade
+
+4. Stop Loss Trigger (Real-time)
+─────────────────────────────────
+ON tick_update:
+    position = GET_OPEN_POSITION()
+    IF position:
+        current_pnl = CALCULATE_POSITION_PNL(position)
+
+        IF current_pnl < position.stop_loss:
+            LOG_WARN("Stop loss hit:", current_pnl)
+            EXIT_POSITION_IMMEDIATELY()
+```
+
+**Real-World Example (CORRECTED LOGIC):**
+
+```
+Timeline: NIFTY Trading Day (Daily = Bullish, Trade CE ONLY)
+────────────────────────────────────────────────────────────
+
+09:15 AM: Daily Analysis
+├─ Daily ADX: 32 ✅
+├─ Daily +DI: 28, -DI: 18
+├─ Daily Direction: BULLISH (CE only for today)
+└─ Set: daily_direction = "CE"
+
+09:20 AM: Hourly Check
+├─ Hourly ADX: 28 ✅
+├─ Hourly +DI: 27, -DI: 19
+├─ Hourly: BULLISH (aligned with daily) ✅
+└─ Ready to trade CE
+
+09:30 AM: Wait for Crossover
+├─ NIFTY: 23,450
+├─ Crossover: +DI crosses above -DI ✅
+└─ Action: BUY NIFTY26DEC23450CE @ ₹150
+
+10:00 AM: Update (Holding CE)
+├─ NIFTY: 23,512
+├─ Daily: Still bullish ✅
+├─ Hourly: Still bullish ✅
+├─ Current P&L: +₹2,500 (profit)
+└─ Action: HOLD CE position ✅
+
+11:00 AM: Hourly Becomes Bearish ⚠️
+├─ NIFTY: 23,489 (dropped)
+├─ Daily: Still bullish (+DI > -DI) ✅
+├─ Hourly: NOW bearish (-DI > +DI) ❌
+├─ Conflict: Daily says CE, Hourly says PE
+├─ Current P&L on CE: +₹750
+└─ Action:
+    1. EXIT CE (hourly conflicts) ✅
+    2. SELL NIFTY26DEC23450CE @ ₹165
+    3. Book profit: +₹750
+    4. DO NOT buy PE! ❌ (daily is still bullish)
+    5. WAIT for hourly to become bullish again ⏳
+
+11:30 AM: Still Waiting (No Position)
+├─ NIFTY: 23,445
+├─ Daily: Still bullish ✅
+├─ Hourly: Still bearish ❌
+├─ Not aligned
+└─ Action: WAIT ⏳ (NO TRADE)
+
+12:00 PM: Still Waiting
+├─ NIFTY: 23,460
+├─ Daily: Bullish ✅
+├─ Hourly: Still bearish (ADX 22) ❌
+└─ Action: WAIT ⏳ (NO TRADE)
+
+01:00 PM: Hourly Aligns Back! ✅
+├─ NIFTY: 23,478
+├─ Daily: Bullish ✅
+├─ Hourly: NOW bullish again! (ADX 26, +DI > -DI) ✅
+├─ Aligned: Both bullish ✅
+└─ Ready to trade CE again
+
+01:15 PM: Wait for Crossover
+├─ NIFTY: 23,489
+├─ Crossover: Price crosses above resistance ✅
+└─ Action: BUY NIFTY26DEC23500CE @ ₹155
+
+02:00 PM: Update (Holding CE)
+├─ NIFTY: 23,523
+├─ Daily: Bullish ✅
+├─ Hourly: Bullish ✅
+├─ Current P&L: +₹1,200
+└─ Action: HOLD CE position ✅
+
+03:25 PM: Square Off Before Close
+├─ Time: 5 minutes to close
+├─ Rule: No overnight positions
+└─ Action: SELL NIFTY26DEC23500CE @ ₹178
+           Book profit: +₹1,150
+
+═══════════════════════════════════════════════════════════
+Summary of Day (Daily = Bullish, Trade CE ONLY):
+═══════════════════════════════════════════════════════════
+
+Total Trades: 2 (BOTH CE, NO PE!)
+
+Trade 1: NIFTY 23450 CE (9:30 AM - 11:00 AM)
+├─ Reason: Daily + Hourly both bullish
+├─ Entry: ₹150
+├─ Exit: ₹165 (hourly conflict)
+└─ P&L: +₹750
+
+No Trade Period: 11:00 AM - 1:00 PM ⏳
+├─ Reason: Hourly bearish (conflicts with daily)
+├─ Did NOT trade PE (daily still bullish!)
+└─ Waited for hourly to align back
+
+Trade 2: NIFTY 23500 CE (1:15 PM - 3:25 PM)
+├─ Reason: Hourly aligned back with daily
+├─ Entry: ₹155
+├─ Exit: ₹178 (square off)
+└─ P&L: +₹1,150
+
+Total Day P&L: +₹1,900 (before charges)
+
+Key Observations:
+─────────────────
+✅ Daily set direction: CE ONLY for entire day
+✅ Exited when hourly conflicted (didn't switch to PE!)
+✅ Waited for hourly to align back with daily
+✅ Re-entered CE when both aligned again
+❌ NEVER traded PE (daily was bullish all day)
+✅ Only 2 trades (both CE), avoided false signals
+```
+
+**Critical Rules (UPDATED):**
+
+```
+┌──────────────────────────────────────────────────────────┐
+│     NEVER TRADE AGAINST DAILY TREND                      │
+└──────────────────────────────────────────────────────────┘
+
+Rule 1: Daily Trend = Master Direction
+───────────────────────────────────────
+✅ If Daily = Bullish → Trade CE ONLY for entire day
+✅ If Daily = Bearish → Trade PE ONLY for entire day
+❌ NEVER switch between CE and PE during same day
+
+Rule 2: Hourly = Entry Timing (NOT Direction)
+──────────────────────────────────────────────
+✅ Hourly MUST align with daily before entry
+✅ If hourly conflicts → EXIT and WAIT
+❌ If hourly conflicts → DO NOT trade opposite
+
+Rule 3: Exit When Hourly Conflicts
+───────────────────────────────────
+IF in_position AND hourly_conflicts_with_daily:
+    → EXIT position ✅
+    → WAIT for hourly to align back ⏳
+    → DO NOT enter opposite direction ❌
+
+Rule 4: Re-enter When Aligned Back
+───────────────────────────────────
+IF hourly_aligns_back_with_daily:
+    → Wait for crossover signal
+    → Re-enter SAME direction (CE or PE)
+    → Not opposite direction!
+
+Rule 5: Daily Direction Changes Next Day Only
+──────────────────────────────────────────────
+✅ Check daily trend at 9:15 AM every day
+✅ If today = Bullish, tomorrow might be Bearish
+✅ Change direction ONLY at start of new day
+❌ Do NOT change direction during same day
+
+Example Scenarios:
+──────────────────
+
+Scenario 1: Daily Bullish, Hourly Becomes Bearish
+├─ Daily: Bullish (CE direction)
+├─ Hourly: Becomes bearish
+├─ Action: EXIT CE, WAIT (don't trade PE!)
+└─ Re-enter: CE when hourly bullish again
+
+Scenario 2: Daily Bearish, Hourly Becomes Bullish
+├─ Daily: Bearish (PE direction)
+├─ Hourly: Becomes bullish
+├─ Action: EXIT PE, WAIT (don't trade CE!)
+└─ Re-enter: PE when hourly bearish again
+
+Scenario 3: Next Day Reversal
+├─ Monday: Daily bullish → Trade CE all day
+├─ Tuesday: Daily bearish → Trade PE all day
+├─ Switch happens: At 9:15 AM Tuesday
+└─ Not during Monday!
+```
+
+**Corrected Position Management:**
+
+```
+1. ALWAYS exit before entering opposite direction
+   ❌ WRONG: Hold CE and PE together (hedging not allowed)
+   ✅ RIGHT: Exit CE → Wait → Enter PE
+
+2. Use LIMIT orders for entry, MARKET orders for exit
+   ✅ Entry: LIMIT order (get good price)
+   ✅ Exit: MARKET order (exit fast when signal changes)
+
+3. Minimum holding period: 15 minutes
+   Don't switch positions too frequently
+   Avoid whipsaws and excessive costs
+
+4. Maximum switches per day: 3
+   If signal changes >3 times → STOP TRADING
+   Market is choppy, no clear trend
+
+5. Gap between exit and entry: 30 seconds
+   Ensure exit is confirmed before new entry
+   Avoid simultaneous CE and PE positions
+```
+
+**Signal Change Validation:**
+
+```
+Algorithm: Confirm Signal Change (Avoid False Signals)
+
+Function IS_VALID_SIGNAL_CHANGE(new_signal):
+
+    // Require 2 consecutive confirmations
+    IF new_signal == last_signal:
+        confirmation_count += 1
+    ELSE:
+        confirmation_count = 1
+        last_signal = new_signal
+
+    // Only act after 2 confirmations (2 minutes)
+    IF confirmation_count >= 2:
+        RETURN TRUE
+    ELSE:
+        LOG_INFO("Signal change pending confirmation:", new_signal)
+        RETURN FALSE
+
+Example:
+────────
+10:00 AM: Signal changes CE → PE (count: 1, wait)
+10:01 AM: Signal still PE (count: 2, confirmed! ✅)
+         → Exit CE, Enter PE
+
+vs.
+
+10:00 AM: Signal changes CE → PE (count: 1, wait)
+10:01 AM: Signal back to CE (count: 1, false signal ❌)
+         → Don't exit, continue holding CE
+```
+
+**Position Tracking:**
+
+```
+Data Structure: Track Current Position
+
+current_position = {
+    symbol: "NIFTY26DEC23450CE",
+    token: 99926009,
+    direction: "CE",
+    entry_time: "2024-12-23 09:15:00",
+    entry_price: 150.00,
+    quantity: 50,
+    current_price: 165.00,
+    pnl: +750.00,
+    stop_loss: -375.00,  // 50% of entry
+    target: +1125.00,    // 150% of entry
+    atm_at_entry: 23450
+}
+
+Update this EVERY tick for P&L monitoring
+```
+
+#### 3.1.4 Dynamic Token Selection Algorithm (Implementation)
+
+#### 3.1.4 Strike Increments Reference
+
+| Underlying | Strike Increment | Example Strikes                   |
+| ---------- | ---------------- | --------------------------------- |
+| NIFTY      | 50               | 23400, 23450, 23500, 23550, 23600 |
+| BANKNIFTY  | 100              | 48900, 49000, 49100, 49200, 49300 |
+| FINNIFTY   | 50               | 21800, 21850, 21900, 21950, 22000 |
+| MIDCPNIFTY | 25               | 10000, 10025, 10050, 10075, 10100 |
+| SENSEX     | 100              | 77000, 77100, 77200, 77300, 77400 |
+
+#### 3.1.5 Expiry Date Calculation
+
+```
+Algorithm: Calculate Expiry Dates
+
+1. Weekly Expiry (Most liquid):
+   - NIFTY: Every Thursday
+   - BANKNIFTY: Every Wednesday
+   - FINNIFTY: Every Tuesday
+
+   Function GET_WEEKLY_EXPIRY(underlying, today):
+       IF underlying == "NIFTY":
+           RETURN NEXT_THURSDAY(today)
+       ELSE IF underlying == "BANKNIFTY":
+           RETURN NEXT_WEDNESDAY(today)
+       ELSE IF underlying == "FINNIFTY":
+           RETURN NEXT_TUESDAY(today)
+
+2. Monthly Expiry:
+   - Last Thursday of every month for all indices
+
+   Function GET_MONTHLY_EXPIRY(today):
+       RETURN LAST_THURSDAY_OF_MONTH(today)
+
+3. Expiry Date Format in CSV:
+   - Format: "26Dec2024" (Angel One format)
+   - Convert to: "2024-12-26" for internal use
+```
+
+#### 3.1.6 JSON Storage Format
+
+```json
+{
+  "metadata": {
+    "created_at": "2024-12-15T10:00:00Z",
+    "source": "angel_one_csv",
+    "csv_date": "2024-12-15"
+  },
+  "tokens": {
+    "NIFTY_2024-12-26_23500": {
+      "underlying": "NIFTY",
+      "expiry": "2024-12-26",
+      "strike": 23500,
+      "ce_token": 99926009,
+      "ce_symbol": "NIFTY23DEC23500CE",
+      "pe_token": 99926010,
+      "pe_symbol": "NIFTY23DEC23500PE",
+      "lot_size": 50
+    },
+    "NIFTY_2024-12-26_23550": {
+      "underlying": "NIFTY",
+      "expiry": "2024-12-26",
+      "strike": 23550,
+      "ce_token": 99926011,
+      "ce_symbol": "NIFTY23DEC23550CE",
+      "pe_token": 99926012,
+      "pe_symbol": "NIFTY23DEC23550PE",
+      "lot_size": 50
+    }
+  }
+}
+```
+
+#### 3.1.7 Token Refresh Strategy & Expiry Handling
+
+**When to Re-Download CSV:**
+
+1. **Daily (Mandatory)**: Every morning before 9:15 AM
+   - Fresh tokens for the day
+   - New expiry series added by exchange
+   - Corporate actions, symbol changes
+2. **After Weekly Expiry**: Immediately after 3:30 PM on expiry days
+   - NIFTY: Every Thursday after 3:30 PM
+   - BANKNIFTY: Every Wednesday after 3:30 PM
+   - FINNIFTY: Every Tuesday after 3:30 PM
+   - Reason: New weekly expiry becomes current, old one expires
+3. **After Monthly Expiry**: Last Thursday of month after 3:30 PM
+   - Next month's contracts become active
+   - New strikes may be introduced
+4. **On Startup**: If bot starts mid-day
+   - Check CSV age: if >6 hours old, re-download
+   - Validate token freshness before trading
+5. **On Failure**: If token lookup fails repeatedly
+   - Force CSV re-download
+   - Possible: Exchange added new strikes, symbol changes
+
+**CSV Age Check Algorithm:**
+
+```
+Algorithm: Should Re-Download CSV?
+
+INPUT:
+  - last_csv_download_time: Timestamp of last CSV download
+  - current_time: Current timestamp
+  - today_is_expiry_day: Boolean (is today weekly/monthly expiry?)
+
+STEPS:
+
+1. Check if CSV exists:
+   IF csv_file NOT EXISTS:
+       RETURN TRUE  // Must download
+
+2. Calculate CSV age:
+   csv_age_hours = (current_time - last_csv_download_time) / 3600
+
+3. Check daily refresh (before market open):
+   IF current_time < MARKET_OPEN (9:15 AM):
+       IF csv_age_hours >= 12:  // Older than 12 hours
+           RETURN TRUE  // Download fresh CSV
+
+4. Check expiry day (after market close):
+   IF today_is_expiry_day == TRUE:
+       IF current_time > MARKET_CLOSE (3:30 PM):
+           IF last_csv_download_time < MARKET_CLOSE:
+               RETURN TRUE  // Download post-expiry CSV
+
+5. Check stale CSV (during trading):
+   IF csv_age_hours > 24:  // CSV is more than 1 day old
+       RETURN TRUE  // CSV too old, refresh
+
+6. Otherwise:
+   RETURN FALSE  // Use existing CSV
+
+OUTPUT: Boolean (true = download, false = use cached)
+```
+
+**Expiry Date Detection Algorithm:**
+
+```
+Algorithm: Is Today an Expiry Day?
+
+INPUT:
+  - today: Current date
+  - underlying: "NIFTY", "BANKNIFTY", "FINNIFTY"
+
+STEPS:
+
+1. Get day of week:
+   day_of_week = GET_DAY_OF_WEEK(today)
+
+2. Check weekly expiry:
+   IF underlying == "NIFTY":
+       IF day_of_week == THURSDAY:
+           RETURN TRUE (weekly expiry)
+
+   ELSE IF underlying == "BANKNIFTY":
+       IF day_of_week == WEDNESDAY:
+           RETURN TRUE (weekly expiry)
+
+   ELSE IF underlying == "FINNIFTY":
+       IF day_of_week == TUESDAY:
+           RETURN TRUE (weekly expiry)
+
+3. Check monthly expiry:
+   IF IS_LAST_THURSDAY_OF_MONTH(today):
+       RETURN TRUE (monthly expiry)
+
+4. Otherwise:
+   RETURN FALSE (not an expiry day)
+```
+
+**Expiry Calendar (Always Updated):**
+
+| Week   | NIFTY (Thu) | BANKNIFTY (Wed) | FINNIFTY (Tue) | Monthly (Last Thu)    |
+| ------ | ----------- | --------------- | -------------- | --------------------- |
+| Week 1 | 02-Jan-2025 | 01-Jan-2025     | 31-Dec-2024    | -                     |
+| Week 2 | 09-Jan-2025 | 08-Jan-2025     | 07-Jan-2025    | -                     |
+| Week 3 | 16-Jan-2025 | 15-Jan-2025     | 14-Jan-2025    | -                     |
+| Week 4 | 23-Jan-2025 | 22-Jan-2025     | 21-Jan-2025    | -                     |
+| Week 5 | 30-Jan-2025 | 29-Jan-2025     | 28-Jan-2025    | 30-Jan-2025 (Monthly) |
+
+**Token Validation After Download:**
+
+```
+Algorithm: Validate Downloaded CSV
+
+1. Check file size:
+   IF csv_size < 1 MB:
+       LOG_ERROR("CSV too small, possibly corrupt")
+       USE_FALLBACK_CSV()
+
+2. Parse and count:
+   option_count = COUNT_OPTIONS_IN_CSV()
+
+   IF option_count < 100:
+       LOG_ERROR("Too few options in CSV")
+       USE_FALLBACK_CSV()
+
+3. Check expiry dates:
+   expiry_dates = GET_UNIQUE_EXPIRY_DATES()
+
+   // Should have at least 2-3 expiry dates (current + next)
+   IF LENGTH(expiry_dates) < 2:
+       LOG_WARN("Only one expiry in CSV, possible issue")
+
+4. Verify current expiry exists:
+   current_expiry = GET_CURRENT_WEEKLY_EXPIRY()
+
+   IF current_expiry NOT IN expiry_dates:
+       LOG_ERROR("Current week expiry missing from CSV")
+       USE_FALLBACK_CSV()
+
+5. Check for each underlying:
+   FOR underlying IN ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
+       count = COUNT_OPTIONS(underlying, current_expiry)
+
+       IF count < 50:  // Should have at least 50 strikes (25 CE + 25 PE)
+           LOG_ERROR("Too few strikes for", underlying)
+           USE_FALLBACK_CSV()
+
+6. Success:
+   LOG_INFO("CSV validated successfully")
+   SAVE_AS_CURRENT_CSV()
+   BACKUP_OLD_CSV()  // Keep as fallback
+```
+
+**Fallback Strategy:**
+
+```
+1. Primary: Use today's CSV
+2. Fallback 1: Use yesterday's CSV (if today's fails)
+3. Fallback 2: Use Angel One searchScrip API (real-time)
+4. Fallback 3: Manual intervention (halt trading)
+
+Priority Order:
+  - Today's CSV (after 9:15 AM download)
+  - Yesterday's CSV (if today's download fails)
+  - API-based token search (if both CSV fail)
+  - Stop trading (if all fail)
+```
+
+**CSV Storage Structure:**
+
+```
+data/tokens/
+├── angelone_master_20250115.csv      # Today's CSV
+├── angelone_master_20250114.csv      # Yesterday's CSV (backup)
+├── tokens_20250115.json              # Today's parsed tokens
+├── tokens_20250114.json              # Yesterday's parsed tokens (backup)
+└── tokens_current.json               # Symlink/copy of active tokens
+```
+
+**Automatic CSV Rotation:**
+
+```
+Algorithm: Rotate Old CSVs
+
+1. After successful download:
+   - Rename today's CSV → angelone_master_YYYYMMDD.csv
+   - Parse and save → tokens_YYYYMMDD.json
+   - Create symlink → tokens_current.json
+
+2. Cleanup old files:
+   - Keep current day's CSV
+   - Keep previous day's CSV (backup)
+   - Delete CSVs older than 2 days
+   - Compress CSVs older than 7 days (for audit)
+
+3. On expiry day:
+   - Keep expiry day's CSV for 30 days (audit trail)
+   - Compress and archive
+```
+
+**Critical Rules:**
+
+1. ✅ **NEVER trade with CSV older than 24 hours**
+2. ✅ **Always re-download after expiry (post 3:30 PM)**
+3. ✅ **Validate CSV before trading**
+4. ✅ **Keep yesterday's CSV as backup**
+5. ✅ **If download fails, use fallback or halt trading**
 
 ### 3.2 Underlying Classification
 
@@ -468,44 +3350,94 @@
 
 ### 5.4 ADX-Based Stock Categorization & Option Selection
 
+**⚠️ CRITICAL: Multi-Timeframe Strategy**
+
+- **DAILY timeframe**: Determine trend direction (CE or PE)
+- **HOURLY timeframe**: Find entry/exit signals
+- **Both must align**: Daily + Hourly confirmation required
+
 - **Historical Data Requirement**: Download 1-2 years of historical data for underlying stocks/indices
-- **Daily ADX Calculation**: Calculate Average Directional Index on daily timeframe for each stock
-- **Stock Categorization Process**:
-  - **Category 1 - Buy CE**: ADX > 25, +DI > -DI, volume increasing
-  - **Category 2 - Buy PE**: ADX > 25, -DI > +DI, volume increasing
-  - **Category 3 - No Trade**: ADX < 20 or +DI ≈ -DI or low volume
-- **Category 1 - Buy CE Stocks**:
-  - **Criteria**: ADX > 25, +DI > -DI, volume > average
-  - **Option Selection**: Buy corresponding CE (Call) options
+- **Daily ADX Calculation**: Calculate Average Directional Index on DAILY timeframe for trend direction
+- **Hourly ADX Calculation**: Calculate ADX on HOURLY timeframe for entry timing
+
+#### Step 1: Daily Trend Direction (Which side: CE or PE?)
+
+- **Stock Categorization Process** (using DAILY bars):
+
+  - **Category 1 - Buy CE**: Daily ADX > 25, Daily +DI > -DI
+  - **Category 2 - Buy PE**: Daily ADX > 25, Daily -DI > +DI
+  - **Category 3 - No Trade**: Daily ADX < 25 or unclear direction
+
+- **Category 1 - Buy CE Stocks** (Daily Uptrend):
+
+  - **Criteria**: Daily ADX > 25, Daily +DI > -DI
+  - **Option Type**: Look for CE (Call) options
   - **ATM Selection**: Select CE strikes closest to current stock price
   - **Strike Range**: ±50 points around current price for liquidity
-- **Category 2 - Buy PE Stocks**:
-  - **Criteria**: ADX > 25, -DI > +DI, volume > average
-  - **Option Selection**: Buy corresponding PE (Put) options
+  - **Next Step**: Wait for hourly confirmation before entry
+
+- **Category 2 - Buy PE Stocks** (Daily Downtrend):
+
+  - **Criteria**: Daily ADX > 25, Daily -DI > +DI
+  - **Option Type**: Look for PE (Put) options
   - **ATM Selection**: Select PE strikes closest to current stock price
   - **Strike Range**: ±50 points around current price for liquidity
+  - **Next Step**: Wait for hourly confirmation before entry
+
 - **Category 3 - No Trade Stocks**:
-  - **Criteria**: ADX < 20 or +DI ≈ -DI or volume < average
+  - **Criteria**: Daily ADX < 25 or +DI ≈ -DI
   - **Action**: Skip trading for these stocks
-  - **Reason**: Weak trend or sideways movement
+  - **Reason**: No clear daily trend
+
+#### Step 2: Hourly Entry Confirmation (When to trade?)
+
+- **Entry Signal Requirements** (using HOURLY bars):
+
+  - Hourly ADX > 25 (strong hourly trend)
+  - Hourly direction MUST match daily direction
+  - For CE: Both daily and hourly +DI > -DI
+  - For PE: Both daily and hourly -DI > +DI
+  - Volume confirmation on hourly timeframe
+
+- **Entry Logic**:
+
+  ```
+  IF Daily says CE:
+    WAIT until Hourly ADX > 25 AND Hourly +DI > -DI
+    THEN BUY CE
+
+  IF Daily says PE:
+    WAIT until Hourly ADX > 25 AND Hourly -DI > +DI
+    THEN BUY PE
+
+  IF Daily and Hourly conflict:
+    NO TRADE (wait for alignment)
+  ```
+
 - **ATM Strike Selection Process**:
+
   - **Current Price**: Get real-time LTP of underlying stock
   - **Strike Calculation**: Find nearest available strike price
   - **CE Selection**: For Category 1 stocks, select CE at ATM
   - **PE Selection**: For Category 2 stocks, select PE at ATM
   - **Liquidity Check**: Ensure selected strikes have sufficient OI/volume
+
 - **Daily Rebalancing**:
-  - **Update Categories**: Recalculate ADX daily after market close
-  - **Category Changes**: Move stocks between categories based on new ADX values
-  - **Option Updates**: Update CE/PE selections based on new categories
+
+  - **Update Categories**: Recalculate DAILY ADX once per day (morning)
+  - **Category Changes**: Move stocks between categories based on new daily ADX values
+  - **Hourly Monitoring**: Check HOURLY ADX every hour for entry signals
   - **ATM Adjustments**: Adjust strike selections based on price movements
+
 - **ADX Implementation Details**:
-  - **Period**: 14-day ADX calculation (standard)
-  - **Data Source**: Daily OHLCV data for 1-2 years
-  - **Calculation**: True Range, +DI, -DI, and ADX values
-  - **Validation**: Ensure sufficient historical data for reliable ADX
-  - **Update Frequency**: Recalculate ADX daily after market close
-  - **Multi-Timeframe**: Use daily ADX for categorization, 5min/1min for entry timing
+  - **Period**: 14-period ADX calculation (standard)
+  - **Daily Data Source**: Daily OHLCV data for last 30 days minimum
+  - **Hourly Data Source**: Hourly OHLCV data for last 30 hours minimum
+  - **Calculation**: True Range, +DI, -DI, and ADX values for both timeframes
+  - **Update Frequency**:
+    - Daily ADX: Once per day (9:15 AM)
+    - Hourly ADX: Every hour during market hours
+  - **Multi-Timeframe Confirmation**: Daily defines direction, Hourly confirms timing
 
 ### 5.5 Concrete Strategy Logic & Execution Rules
 
@@ -635,7 +3567,7 @@
 
 - **Idempotent Order IDs**: Use unique order IDs to prevent duplicates
   - Generate UUID-based order IDs
-  - Store order ID mapping in database
+  - Store order ID mapping in JSON file (state/orders.json)
   - Check for existing orders before retry
 - **Order Verification Process**:
   - **Place Order**: Submit order via Angel One SmartAPI
@@ -696,7 +3628,7 @@
 - Manage order rejections
 - Implement circuit breakers
 - **Missing Data Handling**:
-  - If token not found in CSV/API, use cached database
+  - If token not found in CSV/API, use cached JSON file
   - If cached data is stale (>7 days), skip trading that token
   - If no data available, use broker's instrument list API
   - Fallback to manual token list if all else fails
@@ -1128,7 +4060,7 @@
 - **Scalability Considerations**:
   - **Horizontal Scaling**: Scale across multiple servers
   - **Load Balancing**: Distribute load across servers
-  - **Database Scaling**: Scale database for high throughput
+  - **File Storage Optimization**: Use compression and efficient file I/O for high throughput
   - **Caching Strategy**: Implement efficient caching
 - **High Availability**:
   - **Fault Tolerance**: Handle system failures gracefully
@@ -1313,7 +4245,7 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
 ### 13.2 Execution Protections
 
 - Price protection: max slippage fences; reject fills beyond thresholds
-- Quote-depth-aware limit pricing; prefer limits over markets; allow IOC/FOK when needed
+- Quote-depth-aware limit pricing; **ALWAYS use LIMIT orders** (never MARKET orders for safety); allow IOC/FOK when needed
 - Per-second and per-minute order throttling; backoff on rejects
 - Persist idempotency/intent hashes to avoid duplicates across restarts
 
@@ -1355,7 +4287,7 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
 
 - NTP-sync host clock; detect clock skew vs exchange timestamps
 - Store UTC in files/logs; display IST in UI
-- Prefer exchange timestamps when available over local time
+- **ALWAYS use exchange timestamps when available** (fallback to local time only if unavailable)
 
 ### 13.9 Risk Controls (Hard Caps)
 
@@ -1514,7 +4446,7 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
   - Perform full system validation and reconciliation
   - Generate incident report for review
 
-#### 13.14.3 Database/File Corruption Recovery
+#### 13.14.3 JSON File Corruption Recovery
 
 - **Corruption Detection**:
 
@@ -1799,7 +4731,7 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
   - [ ] All tests pass (unit, integration, backtest)
   - [ ] Code review approved by 2+ reviewers
   - [ ] Configuration files updated for new version
-  - [ ] Database/JSON schema migrations prepared (if needed)
+  - [ ] JSON schema migrations prepared (if needed)
   - [ ] Rollback plan documented
   - [ ] Deployment scheduled during non-market hours
   - [ ] Backup of current production system created
@@ -2249,7 +5181,7 @@ Prioritize API mapping, async architecture, error handling, compliance, and adva
   - Delete logs older than 1 year (unless required for audit)
 
 - **Searchability**:
-  - Structured logging format (JSON preferred)
+  - Structured logging format (JSON REQUIRED)
   - Indexed by timestamp, category, level
   - Include correlation IDs for order/position tracking
   - Support grep/search across archived logs
@@ -2393,7 +5325,7 @@ enable_dashboard = true
 dashboard_port = 8080
 health_check_interval_seconds = 30
 log_level = "INFO"                    # ERROR, WARN, INFO, DEBUG
-log_format = "json"                   # json or text
+log_format = "json"                   # MUST be json for structured logging
 enable_email_alerts = true
 enable_sms_alerts = false
 alert_email = "operator@example.com"
@@ -3069,26 +6001,23 @@ enable_cloud_backup = true
 - **Storage**: Maintain rolling array of last N volume values
 - **Startup**: Need minimum N bars before volume average is valid
 
-### 19.5 Indicator Library Recommendations
+### 19.5 Indicator Library Requirements
 
-**Option 1: Use Existing Technical Analysis Libraries**
+**MANDATORY: Use Existing Technical Analysis Libraries**
 
-- Most programming languages have TA libraries (TA-Lib, ta-rs, pandas-ta, etc.)
-- Advantages: Tested implementations, optimized performance
-- Disadvantages: Dependency on external library, potential version conflicts
+- **MUST use established TA libraries** (TA-Lib, ta-rs for Rust, or equivalent)
+- **DO NOT implement indicators manually** - error-prone and time-consuming
+- Advantages: Battle-tested implementations, optimized performance, edge cases handled
+- Required validation:
+  - Validate calculations against known test cases
+  - Cross-check ADX/RSI/EMA values with TradingView or other platforms
+  - Implement error handling for edge cases (insufficient data, zero divisions)
 
-**Option 2: Implement Manually**
+**For Rust Implementation**:
 
-- Follow formulas above exactly as specified
-- Advantages: Full control, no dependencies, educational
-- Disadvantages: More development time, need thorough testing
-
-**Recommendation**:
-
-- Use established library for production (TA-Lib or equivalent)
-- Validate calculations against known test cases
-- Cross-check ADX/RSI/EMA values with TradingView or other platforms
-- Implement error handling for edge cases (insufficient data, zero divisions)
+- Use `ta` crate (most popular) or `yata` crate (high performance)
+- Never write custom indicator logic
+- Trust established implementations
 
 ## 20. Transaction Cost Model & P&L Calculation
 
@@ -3506,7 +6435,7 @@ Final Client Limit = MAX(7,500, 21,277) = **21,277 units**
 
 **Log Format Requirements**:
 
-- Structured format (JSON or database)
+- Structured format (JSON)
 - Searchable and filterable
 - Immutable (append-only, no deletion/modification)
 - Include correlation IDs to track order lifecycle
