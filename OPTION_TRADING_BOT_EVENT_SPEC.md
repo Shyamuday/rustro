@@ -2452,9 +2452,1927 @@ This specification is **complete and unambiguous**. Every decision point has an 
 
 ---
 
+## Strategy Implementation Details
+
+### Overview
+
+This section provides **step-by-step implementation details** for the ADX multi-timeframe strategy. Every calculation, decision tree, and trigger condition is explicitly defined with pseudocode.
+
+---
+
+### 1. ADX (Average Directional Index) Calculation
+
+#### Step 1: True Range (TR)
+
+For each bar, calculate the True Range:
+
+```
+TR = max(
+  high - low,
+  abs(high - previous_close),
+  abs(low - previous_close)
+)
+
+For the first bar (no previous close):
+  TR = high - low
+```
+
+**Example**:
+
+```
+Bar 1: high=23500, low=23450, prev_close=23480
+  TR = max(23500-23450, |23500-23480|, |23450-23480|)
+     = max(50, 20, 30)
+     = 50
+```
+
+#### Step 2: Directional Movement (DM)
+
+For each bar, calculate +DM and -DM:
+
+```
+up_move = high - previous_high
+down_move = previous_low - low
+
+if up_move > down_move AND up_move > 0:
+  +DM = up_move
+  -DM = 0
+elif down_move > up_move AND down_move > 0:
+  +DM = 0
+  -DM = down_move
+else:
+  +DM = 0
+  -DM = 0
+
+For the first bar (no previous bar):
+  +DM = 0
+  -DM = 0
+```
+
+**Example**:
+
+```
+Bar 2: high=23520, low=23470, prev_high=23500, prev_low=23450
+  up_move = 23520 - 23500 = 20
+  down_move = 23450 - 23470 = -20 (negative, so 0)
+
+  Since up_move > 0 and down_move <= 0:
+    +DM = 20
+    -DM = 0
+```
+
+#### Step 3: Smoothed TR and DM (14-period)
+
+Use **Wilder's Smoothing** (not simple moving average):
+
+```
+// Initial smoothed value (after 14 periods)
+smoothed_TR_14 = sum(TR for 14 periods) / 14
+smoothed_plus_DM_14 = sum(+DM for 14 periods) / 14
+smoothed_minus_DM_14 = sum(-DM for 14 periods) / 14
+
+// Subsequent smoothed values (Wilder's smoothing)
+smoothed_TR = (previous_smoothed_TR * 13 + current_TR) / 14
+smoothed_plus_DM = (previous_smoothed_plus_DM * 13 + current_plus_DM) / 14
+smoothed_minus_DM = (previous_smoothed_minus_DM * 13 + current_minus_DM) / 14
+```
+
+**Implementation Note**: Need **14 bars** before first ADX value is available.
+
+#### Step 4: Directional Indicators (+DI, -DI)
+
+```
++DI = (smoothed_plus_DM / smoothed_TR) * 100
+-DI = (smoothed_minus_DM / smoothed_TR) * 100
+```
+
+**Example**:
+
+```
+smoothed_plus_DM = 15.5
+smoothed_minus_DM = 8.2
+smoothed_TR = 45.0
+
++DI = (15.5 / 45.0) * 100 = 34.44
+-DI = (8.2 / 45.0) * 100 = 18.22
+```
+
+#### Step 5: DX (Directional Index)
+
+```
+DI_diff = abs(+DI - -DI)
+DI_sum = +DI + -DI
+
+DX = (DI_diff / DI_sum) * 100
+```
+
+**Example**:
+
+```
++DI = 34.44
+-DI = 18.22
+
+DI_diff = |34.44 - 18.22| = 16.22
+DI_sum = 34.44 + 18.22 = 52.66
+
+DX = (16.22 / 52.66) * 100 = 30.80
+```
+
+#### Step 6: ADX (Average Directional Index)
+
+First ADX value after 14 DX values:
+
+```
+// Initial ADX (after 28 total bars: 14 for DI, 14 for DX)
+ADX_14 = sum(DX for 14 periods) / 14
+
+// Subsequent ADX values (Wilder's smoothing)
+ADX = (previous_ADX * 13 + current_DX) / 14
+```
+
+**Minimum Bars Required**:
+
+- **Daily ADX**: Need 28 completed daily bars
+- **Hourly ADX**: Need 28 completed hourly bars
+
+---
+
+### 2. Daily Direction Calculation
+
+**When**: At market open (9:15 AM IST) or system startup during market hours
+
+**Data Required**: Last 28 completed daily bars (exclude today)
+
+**Step-by-Step**:
+
+```
+1. Fetch Historical Daily Bars
+   - Endpoint: GET /historical
+   - Symbol: NIFTY
+   - Interval: ONE_DAY
+   - Count: 30 bars (buffer for holidays)
+   - Filter: Take last 28 completed bars before today
+
+2. Calculate Daily ADX(14), +DI, -DI
+   - Use algorithm from Section 9.1
+   - Result: daily_adx, daily_plus_di, daily_minus_di
+
+3. Determine Direction
+   if daily_adx >= DAILY_ADX_THRESHOLD (25):
+     if daily_plus_di > daily_minus_di:
+       daily_direction = "CE"
+     elif daily_minus_di > daily_plus_di:
+       daily_direction = "PE"
+     else:
+       daily_direction = "NO_TRADE"  // Tie (rare)
+   else:
+     daily_direction = "NO_TRADE"  // ADX too low
+
+4. Emit EVENT_DAILY_DIRECTION_DETERMINED
+   payload = {
+     direction: daily_direction,
+     adx: daily_adx,
+     plus_di: daily_plus_di,
+     minus_di: daily_minus_di,
+     date: today_date
+   }
+
+5. Store in State
+   DAILY_DIRECTION = daily_direction
+   DAILY_ADX = daily_adx
+```
+
+**Edge Cases**:
+
+- **Insufficient Data** (< 28 bars): Emit `EVENT_NO_TRADE_MODE_ACTIVE(reason="INSUFFICIENT_HISTORICAL_DATA")`
+- **API Failure**: Retry 3 times with 5s backoff, then `NO_TRADE_MODE`
+- **Tie** (+DI == -DI exactly): `NO_TRADE_MODE` (very rare)
+
+---
+
+### 3. Hourly Alignment Check
+
+**When**: On `EVENT_BAR_READY(timeframe=1h)`
+
+**Data Required**: Last 28 completed hourly bars
+
+**Step-by-Step**:
+
+```
+1. Load Hourly Bars from JSON
+   - File: bars/NIFTY_1h.json
+   - Take last 28 completed bars
+
+2. Calculate Hourly ADX(14), +DI, -DI
+   - Use algorithm from Section 9.1
+   - Result: hourly_adx, hourly_plus_di, hourly_minus_di
+
+3. Check Alignment
+   is_aligned = false
+
+   if DAILY_DIRECTION == "CE":
+     if hourly_adx >= HOURLY_ADX_THRESHOLD (25):
+       if hourly_plus_di > hourly_minus_di:
+         is_aligned = true
+
+   elif DAILY_DIRECTION == "PE":
+     if hourly_adx >= HOURLY_ADX_THRESHOLD (25):
+       if hourly_minus_di > hourly_plus_di:
+         is_aligned = true
+
+   elif DAILY_DIRECTION == "NO_TRADE":
+     is_aligned = false  // Never align if daily says no trade
+
+4. Update State
+   HOURLY_ALIGNED = is_aligned
+   HOURLY_ADX = hourly_adx
+
+5. If Aligned, Proceed to Entry Filters
+   if is_aligned:
+     check_entry_filters()
+   else:
+     // Wait for next hourly bar
+```
+
+**Alignment Decision Tree**:
+
+```
+Daily = CE
+  └─ Hourly ADX >= 25?
+       Yes → Hourly +DI > -DI?
+              Yes → ✅ ALIGNED (CE entries allowed)
+              No  → ❌ NOT ALIGNED
+       No  → ❌ NOT ALIGNED
+
+Daily = PE
+  └─ Hourly ADX >= 25?
+       Yes → Hourly -DI > +DI?
+              Yes → ✅ ALIGNED (PE entries allowed)
+              No  → ❌ NOT ALIGNED
+       No  → ❌ NOT ALIGNED
+
+Daily = NO_TRADE
+  └─ ❌ NEVER ALIGNED (no entries regardless of hourly)
+```
+
+---
+
+### 4. Entry Filters (9 Filters)
+
+**When**: After alignment confirmed
+
+**All filters must pass** before checking entry triggers.
+
+```
+Filter 1: Time Window
+  check: 10:00 <= current_time_IST < 14:30
+  fail: Skip entry, wait for next bar
+
+Filter 2: Position Count
+  check: open_position_count < MAX_POSITIONS (3)
+  fail: Skip entry, wait for position close
+
+Filter 3: VIX Circuit Breaker
+  check: current_vix < VIX_THRESHOLD (30)
+  fail: Skip entry, log "VIX too high"
+
+Filter 4: Daily Loss Limit
+  check: daily_pnl_pct > -DAILY_LOSS_LIMIT_PCT (-0.03)
+  fail: HALT trading for the day
+
+Filter 5: Volume Check (Underlying)
+  check: current_1h_volume > avg_1h_volume * 1.20
+  calculation:
+    avg_1h_volume = mean(volume of last 20 hourly bars)
+    current_1h_volume = volume of current completed 1h bar
+  fail: Skip entry, wait for next bar
+
+Filter 6: Spread Check (Option)
+  check: (ask - bid) / ltp < 0.02  // 2% spread
+  calculation: Get current quote for ATM strike
+  fail: Skip entry, log "Wide spread"
+
+Filter 7: Margin Available
+  check: margin_available > required_margin * 1.5  // 50% buffer
+  calculation:
+    required_margin = calculate_margin(option_ltp, quantity)
+  fail: Skip entry, log "Insufficient margin"
+
+Filter 8: Consecutive Losses
+  check: consecutive_losses < CONSECUTIVE_LOSS_LIMIT (3)
+  fail: Pause entries for 30 minutes
+
+Filter 9: Market Session Valid
+  check: MARKET_SESSION_STATE == "OPEN"
+  fail: Skip entry, wait for next session
+```
+
+**Implementation**:
+
+```
+function check_entry_filters():
+  filters = [
+    ("TIME_WINDOW", check_time_window()),
+    ("POSITION_COUNT", check_position_count()),
+    ("VIX", check_vix()),
+    ("DAILY_LOSS", check_daily_loss()),
+    ("VOLUME", check_volume()),
+    ("SPREAD", check_spread()),
+    ("MARGIN", check_margin()),
+    ("CONSECUTIVE_LOSSES", check_consecutive_losses()),
+    ("MARKET_SESSION", check_market_session())
+  ]
+
+  for (name, passed) in filters:
+    if not passed:
+      log_filter_failure(name)
+      return false
+
+  return true  // All filters passed, proceed to triggers
+```
+
+---
+
+### 5. Entry Triggers (2 Trigger Types)
+
+**When**: After all filters pass
+
+**Either trigger can generate entry signal**
+
+#### Trigger Type 1: Breakout with Volume
+
+**For CE (Call Entry)**:
+
+```
+1. Get current 1-minute LTP (underlying NIFTY)
+2. Get previous 1h bar high
+3. Get current 1h bar volume (ongoing)
+
+Trigger conditions (all must be true):
+  - current_ltp > prev_1h_high  // Breakout
+  - current_1h_volume > prev_1h_volume * 1.3  // 30% more volume
+  - time_since_1h_bar_open >= 15 minutes  // At least 15min into hour
+
+If triggered:
+  strike = calculate_atm(current_ltp)
+  emit EVENT_SIGNAL_GENERATED(side="BUY_CE", strike=strike, reason="BREAKOUT_HIGH")
+```
+
+**For PE (Put Entry)**:
+
+```
+Trigger conditions:
+  - current_ltp < prev_1h_low  // Breakdown
+  - current_1h_volume > prev_1h_volume * 1.3
+  - time_since_1h_bar_open >= 15 minutes
+
+If triggered:
+  strike = calculate_atm(current_ltp)
+  emit EVENT_SIGNAL_GENERATED(side="BUY_PE", strike=strike, reason="BREAKOUT_LOW")
+```
+
+#### Trigger Type 2: RSI + EMA Bounce/Rejection
+
+**Data Required**:
+
+- **5-minute bars** for RSI(14) and 9-EMA
+- Need 14 bars of 5m for RSI, 9 bars for EMA
+
+**For CE (Call Entry)**:
+
+```
+1. Calculate 5m RSI(14) and 5m 9-EMA
+2. Get current 5m bar close price (underlying)
+
+Trigger conditions (all must be true):
+  - rsi_5m < RSI_OVERSOLD (40)  // Oversold
+  - current_close > ema_9_5m  // Price above EMA (bounce)
+  - previous_close <= ema_9_5m  // Crossed up in this bar
+  - current_close > previous_close  // Bullish candle
+
+If triggered:
+  strike = calculate_atm(current_close)
+  emit EVENT_SIGNAL_GENERATED(side="BUY_CE", strike=strike, reason="RSI_EMA_BOUNCE")
+```
+
+**For PE (Put Entry)**:
+
+```
+Trigger conditions:
+  - rsi_5m > RSI_OVERBOUGHT (60)  // Overbought
+  - current_close < ema_9_5m  // Price below EMA (rejection)
+  - previous_close >= ema_9_5m  // Crossed down in this bar
+  - current_close < previous_close  // Bearish candle
+
+If triggered:
+  strike = calculate_atm(current_close)
+  emit EVENT_SIGNAL_GENERATED(side="BUY_PE", strike=strike, reason="RSI_EMA_REJECT")
+```
+
+**RSI Calculation** (14-period):
+
+```
+1. For each bar, calculate price change:
+   change = close - previous_close
+
+2. Separate gains and losses:
+   gain = max(change, 0)
+   loss = max(-change, 0)
+
+3. Calculate average gain/loss (14 periods):
+   avg_gain_14 = sum(gains for 14 periods) / 14
+   avg_loss_14 = sum(losses for 14 periods) / 14
+
+4. Smooth subsequent values (Wilder's):
+   avg_gain = (prev_avg_gain * 13 + current_gain) / 14
+   avg_loss = (prev_avg_loss * 13 + current_loss) / 14
+
+5. Calculate RS and RSI:
+   if avg_loss == 0:
+     RSI = 100
+   else:
+     RS = avg_gain / avg_loss
+     RSI = 100 - (100 / (1 + RS))
+```
+
+**9-EMA Calculation**:
+
+```
+multiplier = 2 / (period + 1) = 2 / (9 + 1) = 0.2
+
+// Initial EMA (use SMA of first 9 bars)
+ema_0 = sum(close for 9 bars) / 9
+
+// Subsequent EMA values
+ema = (close - prev_ema) * multiplier + prev_ema
+    = close * 0.2 + prev_ema * 0.8
+```
+
+---
+
+### 6. Exit Conditions (Technical)
+
+#### Condition 1: Alignment Lost
+
+**When**: On each `EVENT_HOURLY_ANALYSIS_REQUIRED`
+
+```
+On 1h bar close:
+  1. Calculate new hourly alignment (Section 9.3)
+  2. Compare with previous state
+
+  if previous_alignment == true AND current_alignment == false:
+    if has_open_positions():
+      for each position:
+        emit EVENT_EXIT_SIGNAL_GENERATED(
+          position_id=pos.id,
+          reason="ALIGNMENT_LOST",
+          priority=4  // Technical
+        )
+```
+
+#### Condition 2: Low Volume
+
+**When**: Continuously during position monitoring
+
+```
+On each tick (throttled to 1-minute checks):
+  1. Get last 15 minutes of 1-minute bars
+  2. Calculate total volume in 15-minute window
+  3. Compare with average
+
+  volume_15m = sum(volume of last 15 × 1m bars)
+  avg_volume_15m = mean(volume_15m for last 20 hours) // 20 samples
+
+  if volume_15m < avg_volume_15m * 0.50:  // Less than 50%
+    low_volume_duration += 1_minute
+
+    if low_volume_duration >= 15_minutes:
+      emit EVENT_EXIT_SIGNAL_GENERATED(
+        reason="LOW_VOLUME",
+        priority=4
+      )
+  else:
+    low_volume_duration = 0  // Reset counter
+```
+
+#### Condition 3: Strategy Invalidated (After Gap Recovery)
+
+**When**: On `EVENT_RECOVERY_COMPLETED` (if feature flag enabled)
+
+```
+if STRATEGY_INVALIDATE_ON_RECOMPUTE == true:
+  1. Store alignment state before recovery
+     alignment_before = HOURLY_ALIGNED
+
+  2. After data recovery, recalculate hourly ADX
+
+  3. Check alignment with recovered data
+     alignment_after = check_alignment()
+
+  4. If alignment flipped:
+     if alignment_before == true AND alignment_after == false:
+       if has_open_positions():
+         emit EVENT_EXIT_SIGNAL_GENERATED(
+           reason="STRATEGY_INVALIDATED",
+           priority=4
+         )
+```
+
+---
+
+### 7. Strike Selection Logic
+
+#### Calculate ATM Strike
+
+**Input**: Underlying LTP (e.g., NIFTY current price)
+
+**Output**: ATM strike price (rounded to nearest increment)
+
+```
+function calculate_atm(underlying_ltp):
+  strike_increment = 50  // For NIFTY
+
+  atm = floor(underlying_ltp / strike_increment) * strike_increment
+
+  return atm
+
+Examples:
+  calculate_atm(23456) → 23450
+  calculate_atm(23499) → 23450
+  calculate_atm(23500) → 23500
+  calculate_atm(23524) → 23500
+```
+
+#### Determine Option Symbol
+
+**Input**: Strike, option_type (CE/PE), expiry_date
+
+**Output**: Trading symbol (e.g., "NIFTY25JAN23450CE")
+
+```
+function get_option_symbol(underlying, strike, option_type, expiry):
+  // Format: UNDERLYING[YY][MMM][STRIKE][CE/PE]
+
+  year = expiry.year % 100  // 2025 → 25
+  month = expiry.month_abbr  // JAN, FEB, MAR, etc.
+
+  symbol = f"{underlying}{year}{month}{strike}{option_type}"
+
+  return symbol
+
+Example:
+  get_option_symbol("NIFTY", 23450, "CE", date(2025, 1, 30))
+  → "NIFTY25JAN23450CE"
+```
+
+#### Get Broker Token
+
+**Input**: Option symbol
+
+**Output**: Angel One instrument token
+
+```
+function get_broker_token(symbol):
+  1. Load instrument master CSV (downloaded daily)
+     File: data/instruments_YYYYMMDD.csv
+
+  2. Parse CSV and filter:
+     - exch_seg = "NFO"
+     - name = "NIFTY"
+     - symbol = symbol (e.g., "NIFTY25JAN23450CE")
+
+  3. Return token field
+
+  if not found:
+    log_error("Token not found for symbol", symbol)
+    return null
+```
+
+---
+
+### 8. Position Sizing (Complete Example)
+
+**Scenario**:
+
+```
+Account balance: ₹5,00,000
+Current VIX: 18.5
+Days to expiry: 4
+Option LTP: ₹150
+Lot size: 50 (NIFTY)
+```
+
+**Step-by-Step Calculation**:
+
+```
+Step 1: Base amount
+  base_amount = 500000 * 0.02 = ₹10,000
+
+Step 2: VIX multiplier
+  vix = 18.5
+
+  // Falls in 12-20 range, interpolate:
+  slope = (1.00 - 1.25) / (20 - 12) = -0.25 / 8 = -0.03125
+  vix_mult = 1.25 + (-0.03125 * (18.5 - 12))
+           = 1.25 + (-0.03125 * 6.5)
+           = 1.25 - 0.203125
+           = 1.046875
+           ≈ 1.047
+
+Step 3: DTE multiplier
+  dte = 4
+
+  // Falls in 2-4 range:
+  dte_mult = 0.75
+
+Step 4: Adjusted amount
+  adjusted_amount = 10000 * 1.047 * 0.75
+                  = 10000 * 0.78525
+                  = ₹7,852.50
+
+Step 5: Convert to lots
+  option_premium_per_lot = 150 * 50 = ₹7,500
+  lots = floor(7852.50 / 7500) = floor(1.047) = 1 lot
+
+Step 6: Final quantity
+  final_quantity = 1 * 50 = 50 contracts
+
+Step 7: Apply limits
+  final_quantity = min(50, MAX_POSITION_SIZE)
+  final_quantity = min(50, FREEZE_QUANTITY)
+
+  Result: 50 contracts (1 lot)
+```
+
+**Total Capital Required**:
+
+```
+Premium outflow = 50 * 150 = ₹7,500
+Margin (approx) = ₹15,000 (depends on broker)
+Total locked = ₹22,500
+Percentage of account = 4.5%
+```
+
+---
+
+### 9. Stop Loss & Target Management
+
+#### Initial Stop Loss (Entry)
+
+**Calculation**:
+
+```
+On EVENT_POSITION_OPENED:
+  entry_price = fill_price  // e.g., ₹150
+
+  stop_loss_price = entry_price * (1 - OPTION_STOP_LOSS_PCT)
+                  = 150 * (1 - 0.20)
+                  = 150 * 0.80
+                  = ₹120
+
+  Store in position record:
+    position.stop_loss = 120
+    position.stop_loss_pct = 0.20
+```
+
+#### Target (Optional)
+
+**If configured**:
+
+```
+target_pct = 0.15  // 15% profit target (configurable)
+
+target_price = entry_price * (1 + target_pct)
+             = 150 * 1.15
+             = ₹172.50
+
+position.target = 172.50
+```
+
+#### Trailing Stop Activation
+
+**Monitor on each tick**:
+
+```
+On EVENT_TICK_RECEIVED (for position symbol):
+  current_price = tick.ltp  // e.g., ₹155
+
+  pnl_pct = (current_price - entry_price) / entry_price
+          = (155 - 150) / 150
+          = 0.0333  // 3.33%
+
+  if pnl_pct >= TRAIL_ACTIVATE_PNL_PCT (0.02):  // 2%
+    if not position.trailing_active:
+      position.trailing_active = true
+      position.trailing_stop = current_price * (1 - TRAIL_GAP_PCT)
+                             = 155 * (1 - 0.015)
+                             = 155 * 0.985
+                             = ₹152.675
+
+      log("Trailing stop activated",
+          entry=150, current=155, trail=152.675)
+```
+
+#### Trailing Stop Update (Ratchet)
+
+**On each subsequent tick**:
+
+```
+if position.trailing_active:
+  current_price = tick.ltp  // e.g., ₹158
+
+  new_trail = current_price * (1 - TRAIL_GAP_PCT)
+            = 158 * 0.985
+            = ₹155.63
+
+  // Only move UP, never down
+  position.trailing_stop = max(position.trailing_stop, new_trail)
+                         = max(152.675, 155.63)
+                         = ₹155.63
+
+  log("Trailing stop updated", new_trail=155.63)
+```
+
+#### Exit Trigger (Trailing Stop)
+
+```
+On each tick (if trailing active):
+  if current_price < position.trailing_stop:
+    emit EVENT_EXIT_SIGNAL_GENERATED(
+      position_id=position.id,
+      reason="TRAILING_STOP",
+      current_price=current_price,
+      trail_price=position.trailing_stop
+    )
+```
+
+**Complete Timeline Example**:
+
+```
+Time    Price   PNL%   Trailing   Action
+-----   -----   ----   --------   ------
+Entry   ₹150    0%     -          Entry at ₹150, SL=₹120
+10:25   ₹152    1.3%   -          No trailing yet (< 2%)
+10:30   ₹154    2.7%   ₹151.69    ✓ Trailing activated
+10:35   ₹158    5.3%   ₹155.63    Trail updated (ratchet up)
+10:40   ₹160    6.7%   ₹157.60    Trail updated
+10:45   ₹162    8.0%   ₹159.57    Trail updated
+10:50   ₹161    7.3%   ₹159.57    Trail unchanged (price down)
+10:55   ₹158    5.3%   ₹159.57    Trail unchanged
+11:00   ₹157    4.7%   ₹159.57    Price < Trail → EXIT ✓
+
+Exit price: ₹157
+Entry: ₹150
+Profit: ₹7 per contract × 50 = ₹350 gross
+Duration: 35 minutes
+```
+
+---
+
+### 10. Data Gap Detection & Recovery
+
+#### Gap Detection Logic
+
+**Background Task** (runs every 60 seconds):
+
+```
+function check_data_gaps():
+  for each subscribed_symbol:
+    last_tick_time = get_last_tick_timestamp(symbol)
+    current_time = now()
+
+    gap_duration = current_time - last_tick_time
+
+    if gap_duration > DATA_GAP_THRESHOLD (60 seconds):
+      emit EVENT_DATA_GAP_RECOVERY_REQUIRED(
+        symbol=symbol,
+        gap_start=last_tick_time,
+        gap_end=current_time,
+        duration_sec=gap_duration
+      )
+```
+
+#### Recovery Process
+
+**Step 1: Pause Entries**
+
+```
+On EVENT_DATA_GAP_RECOVERY_REQUIRED:
+  ACCEPTING_NEW_ENTRIES = false
+  log("Data gap detected, pausing entries", symbol, duration)
+```
+
+**Step 2: Fetch Missing Data**
+
+```
+gap_start_time = event.gap_start
+gap_end_time = event.gap_end
+
+// Round to 1-minute boundaries
+from_time = floor_to_minute(gap_start_time)
+to_time = ceil_to_minute(gap_end_time)
+
+// Call REST API
+response = broker_api.get_historical_data(
+  symbol=symbol,
+  interval="ONE_MINUTE",
+  from_date=from_time,
+  to_date=to_time
+)
+
+if response.success:
+  bars = response.data
+else:
+  emit EVENT_RECOVERY_FAILED(error=response.error)
+  return
+```
+
+**Step 3: Validate Fetched Data**
+
+```
+function validate_recovery_data(bars):
+  // Check 1: All timestamps sequential
+  for i in 1..bars.length:
+    expected_time = bars[i-1].timestamp + 60_seconds
+    actual_time = bars[i].timestamp
+
+    if actual_time != expected_time:
+      log_warning("Gap in recovered data", expected, actual)
+
+  // Check 2: OHLC relationships valid
+  for bar in bars:
+    if not (bar.low <= bar.open <= bar.high):
+      return false
+    if not (bar.low <= bar.close <= bar.high):
+      return false
+    if bar.high < bar.low:
+      return false
+
+  // Check 3: No duplicates
+  timestamps = [bar.timestamp for bar in bars]
+  if len(timestamps) != len(set(timestamps)):
+    return false  // Duplicates found
+
+  return true
+```
+
+**Step 4: Insert into Timeline**
+
+```
+function merge_recovered_bars(recovered_bars):
+  // Load existing bars from JSON
+  existing_bars = load_json("bars/NIFTY_1m.json")
+
+  // Merge (prefer recovered bars for overlapping times)
+  merged = []
+
+  for bar in existing_bars:
+    if bar.timestamp not in recovered_timestamps:
+      merged.append(bar)
+
+  for bar in recovered_bars:
+    merged.append(bar)
+
+  // Sort by timestamp
+  merged.sort(key=lambda b: b.timestamp)
+
+  // Write back atomically
+  save_json("bars/NIFTY_1m.json", merged)
+```
+
+**Step 5: Recalculate Indicators**
+
+```
+// Rebuild higher timeframes affected by gap
+rebuild_bars(timeframe="5m")
+rebuild_bars(timeframe="15m")
+rebuild_bars(timeframe="1h")
+
+// Recalculate hourly ADX
+hourly_adx_new = calculate_adx(bars_1h, period=14)
+
+// Check if alignment changed
+alignment_before = HOURLY_ALIGNED
+alignment_after = check_alignment_with_new_adx(hourly_adx_new)
+
+if alignment_before != alignment_after:
+  log_warning("Alignment changed after recovery",
+              before=alignment_before,
+              after=alignment_after)
+
+  // If feature flag enabled, trigger exit
+  if STRATEGY_INVALIDATE_ON_RECOMPUTE:
+    emit EVENT_EXIT_SIGNAL_GENERATED(reason="STRATEGY_INVALIDATED")
+```
+
+**Step 6: Resume**
+
+```
+emit EVENT_RECOVERY_COMPLETED(
+  symbol=symbol,
+  bars_recovered=len(recovered_bars),
+  indicators_recalculated=true
+)
+
+ACCEPTING_NEW_ENTRIES = true
+log("Recovery completed, resuming entries")
+```
+
+---
+
+### 11. VIX Monitoring & Circuit Breaker
+
+#### VIX Data Source
+
+**Angel One provides VIX as "INDIA VIX" symbol**:
+
+```
+At market open:
+  Subscribe to WebSocket: symbol="INDIA VIX"
+
+On each VIX tick:
+  update global variable: CURRENT_VIX = tick.ltp
+
+  // Also store for 10-minute history
+  vix_history.append({
+    timestamp: tick.timestamp,
+    value: tick.ltp
+  })
+
+  // Keep only last 10 minutes
+  cutoff = now() - 10_minutes
+  vix_history = [v for v in vix_history if v.timestamp > cutoff]
+```
+
+#### Spike Detection
+
+**Check on every VIX tick** (or throttled to every 5 seconds):
+
+```
+function check_vix_spike():
+  current_vix = CURRENT_VIX
+  vix_10min_ago = get_vix_at_time(now() - 10_minutes)
+
+  // Condition 1: Absolute threshold
+  if current_vix > VIX_THRESHOLD (30):
+    trigger_reason = f"VIX absolute: {current_vix}"
+    emit EVENT_VIX_SPIKE(...)
+    return
+
+  // Condition 2: Relative spike
+  if vix_10min_ago is not null:
+    spike_amount = current_vix - vix_10min_ago
+
+    if spike_amount > VIX_SPIKE_THRESHOLD (5):
+      trigger_reason = f"VIX spike: {vix_10min_ago} → {current_vix} (+{spike_amount})"
+      emit EVENT_VIX_SPIKE(...)
+      return
+
+function get_vix_at_time(target_time):
+  // Find closest VIX value to target time
+  for entry in reversed(vix_history):
+    if entry.timestamp <= target_time:
+      return entry.value
+  return null
+```
+
+#### Circuit Breaker Execution
+
+```
+On EVENT_VIX_SPIKE:
+  1. Log circuit breaker trigger
+     log_alert("VIX CIRCUIT BREAKER TRIGGERED",
+               current_vix, spike_amount, timestamp)
+
+  2. Stop new entries immediately
+     ACCEPTING_NEW_ENTRIES = false
+     VIX_SPIKE_ACTIVE = true
+
+  3. Create exit queue for all open positions
+     exit_queue = []
+     for position in open_positions:
+       if not is_already_exiting(position.id):
+         exit_queue.append(position.id)
+
+  4. Process exits sequentially
+     for position_id in exit_queue:
+       emit EVENT_EXIT_SIGNAL_GENERATED(
+         position_id=position_id,
+         reason="VIX_SPIKE",
+         priority=1,  // Mandatory
+         idempotency_key=generate_key(...)
+       )
+
+       // Wait for this position to close before next
+       wait_for_completion_or_timeout(position_id, 60_seconds)
+
+  5. After all positions closed
+     emit EVENT_POSITIONS_CLOSED(
+       position_ids=exit_queue,
+       reason="VIX_SPIKE",
+       total_pnl=sum(pnls)
+     )
+```
+
+#### Resume After VIX Normalizes
+
+**Background Task** (runs every 60 seconds if VIX_SPIKE_ACTIVE):
+
+```
+function check_vix_resume():
+  if not VIX_SPIKE_ACTIVE:
+    return
+
+  // Check if VIX below resume threshold for 10 minutes
+  window_start = now() - 10_minutes
+  vix_values = [v.value for v in vix_history if v.timestamp >= window_start]
+
+  if len(vix_values) < 10:
+    return  // Not enough data yet
+
+  max_vix_in_window = max(vix_values)
+
+  if max_vix_in_window < VIX_RESUME_THRESHOLD (28):
+    log("VIX normalized, resuming trading",
+        max_vix=max_vix_in_window)
+
+    VIX_SPIKE_ACTIVE = false
+    ACCEPTING_NEW_ENTRIES = true
+```
+
+---
+
+## Error Handling Reference
+
+### Comprehensive Error Matrix
+
+| **Error Type**                      | **Detection**                           | **Recovery**                                        | **Fallback**                              | **Impact**               |
+| ----------------------------------- | --------------------------------------- | --------------------------------------------------- | ----------------------------------------- | ------------------------ |
+| **WebSocket Disconnect**            | Pong timeout (90s)                      | Reconnect with exponential backoff [1,2,4,8,16,30]s | Pause new entries during reconnect        | Data continuity risk     |
+| **WebSocket Auth Fail**             | Connection rejected                     | Refresh token → Retry connect                       | If token refresh fails → graceful flatten | Cannot trade             |
+| **Token Refresh Failure**           | API 401/403                             | Retry 3× with 5s backoff                            | Flatten positions in 180s, alert operator | Trading halt             |
+| **Token Expiry During Trading**     | Proactive monitor (30min warning)       | Immediate refresh attempt                           | If fail: LIMIT exits → MARKET exits       | Forced exit              |
+| **Data Gap (>60s)**                 | Periodic tick timestamp check (1min)    | REST API backfill + indicator recalc                | Pause entries until recovered             | Strategy drift           |
+| **REST API Rate Limit**             | HTTP 429 response                       | Exponential backoff [2,4,8,16]s                     | Queue requests, throttle to 3/sec         | Delayed orders           |
+| **Order Rejected (RMS)**            | Broker rejection message                | Log + alert, do not retry                           | Skip trade, continue monitoring           | Missed trade             |
+| **Order Timeout (60s)**             | No fill confirmation                    | Retry with price adjustment +0.25%                  | After 5 attempts: give up                 | Missed entry             |
+| **Partial Fill**                    | Fill qty < order qty                    | Accept partial, log discrepancy                     | Continue with reduced position            | Smaller position         |
+| **Price Band Breach**               | Pre-order validation fail               | Adjust price to within ±20% LTP                     | If still fails: reject order              | Missed trade             |
+| **Freeze Quantity Breach**          | Pre-order validation fail               | Split into multiple orders (if possible)            | Reduce position size                      | Smaller position         |
+| **Margin Insufficient**             | Pre-order validation fail               | Skip trade, log margin required                     | Alert operator to add funds               | Missed trade             |
+| **Invalid Symbol/Token**            | Broker rejects order                    | Reload instrument master → retry                    | If still fails: skip trade                | Missed trade             |
+| **Historical Data Unavailable**     | REST API error on startup               | Retry 3× with 10s backoff                           | Enter NO_TRADE_MODE for the day           | No trading               |
+| **Invalid Bar (OHLC)**              | Validation: high < low                  | Quarantine bad bar, log warning                     | Use previous valid bar                    | Strategy uses stale data |
+| **Insufficient History (<28 bars)** | Bar count check on startup              | Wait for more bars (if intraday start)              | NO_TRADE_MODE if cannot obtain            | No trading               |
+| **Holiday/Non-Trading Day**         | Calendar check fail                     | Wait until next trading day                         | System idle, token monitor active         | No trading               |
+| **Market Closed**                   | Time check (before 9:15 or after 15:30) | Wait until next session                             | System idle                               | No trading               |
+| **VIX Spike**                       | VIX > 30 or +5 in 10min                 | Exit all positions immediately                      | Pause entries until VIX < 28 for 10min    | Forced exit              |
+| **Daily Loss Limit Hit**            | Daily PNL ≤ -3%                         | Halt trading for the day                            | Wait until next day                       | Trading halt             |
+| **Consecutive Losses (3×)**         | Trade result tracking                   | Pause entries for 30 minutes                        | Resume after cooldown                     | Temporary pause          |
+| **System Crash**                    | Process exit/kill                       | Restart → replay unprocessed events from ledger     | Manual intervention if ledger corrupted   | Downtime                 |
+| **Disk Full**                       | Write error on JSON save                | Alert operator, stop new entries                    | Manual cleanup required                   | Data loss risk           |
+| **JSON Parse Error**                | File read exception                     | Use backup file (if exists)                         | Rebuild from events if possible           | State loss risk          |
+| **Network Timeout**                 | HTTP request timeout (30s)              | Retry with backoff                                  | After 3 attempts: fail operation          | Delayed action           |
+| **Broker Downtime**                 | Multiple API failures                   | Exponential backoff, monitor broker status          | Alert operator, maintain positions        | Cannot trade             |
+| **Clock Skew**                      | Timestamp out of sync                   | Sync with NTP server                                | Use broker timestamps as source of truth  | Timing errors            |
+| **Duplicate Event**                 | Idempotency key exists in ledger        | Log as DUPLICATE_IGNORED, skip processing           | Continue normal operation                 | No impact                |
+| **Bar Delayed (>120s)**             | Grace period exceeded                   | Emit EVENT_BAR_DELAYED → trigger gap recovery       | Pause entries                             | Analysis delayed         |
+| **Indicator NaN/Infinity**          | Math validation (div by zero)           | Log error, use previous valid value                 | If persistent: NO_TRADE_MODE              | Invalid signals          |
+| **Position State Mismatch**         | Broker position != local position       | Reconcile on next position fetch                    | Use broker as source of truth             | Risk management error    |
+| **Order ID Collision**              | Duplicate order ID detected             | Regenerate order ID with monotonic counter          | Retry order placement                     | Delayed order            |
+
+---
+
+## Angel One SmartAPI Implementation Details
+
+### 1. Authentication Flow
+
+**Step-by-Step**:
+
+```
+1. Initial Login (Manual TOTP)
+   POST /api/v1/user/login
+   Body: {
+     "clientcode": "USER_ID",
+     "password": "PASSWORD",
+     "totp": "123456"  // From authenticator app
+   }
+
+   Response: {
+     "jwtToken": "eyJ...",  // Valid for ~8 hours
+     "refreshToken": "abc...",
+     "feedToken": "xyz..."  // For WebSocket
+   }
+
+2. Store Tokens Securely
+   - JWT: For REST API authentication
+   - Feed Token: For WebSocket authentication
+   - Refresh Token: For extending session (not always provided)
+
+3. Token Refresh (Before Expiry)
+   POST /api/v1/token/refresh
+   Headers: {
+     "Authorization": "Bearer {jwtToken}"
+   }
+   Body: {
+     "refreshToken": "abc..."
+   }
+
+   Response: {
+     "jwtToken": "eyJ..."  // New JWT
+   }
+
+4. WebSocket Authentication
+   - Feed token is separate from JWT
+   - Does NOT refresh automatically
+   - If JWT refreshed, must reconnect WebSocket with new feed token
+```
+
+**Critical Gotchas**:
+
+- **JWT expires** even if refresh succeeds → must update all API calls
+- **Feed token is tied to JWT session** → WebSocket reconnect required after refresh
+- **TOTP required for initial login** → cannot fully automate daily startup
+- **Refresh token** may not be provided for all account types
+
+---
+
+### 2. WebSocket Connection
+
+**Connection URL**:
+
+```
+wss://smartapisocket.angelone.in/smart-stream
+
+Modes:
+- Mode 1: LTP only
+- Mode 2: Quote (LTP, bid, ask, volume)
+- Mode 3: Snap Quote (full depth)
+```
+
+**Authentication**:
+
+```
+// After connection established
+send({
+  "action": 1,  // Login
+  "params": {
+    "mode": 3,  // Snap quote (full depth)
+    "tokenList": [
+      {
+        "exchangeType": 2,  // NFO
+        "tokens": ["token1", "token2", ...]
+      },
+      {
+        "exchangeType": 1,  // NSE
+        "tokens": ["99926000"]  // NIFTY 50 token
+      }
+    ]
+  }
+})
+```
+
+**Subscription After Auth**:
+
+```
+send({
+  "action": 0,  // Subscribe
+  "params": {
+    "mode": 3,
+    "tokenList": [
+      {
+        "exchangeType": 2,
+        "tokens": ["42345", "42346", ...]  // Option tokens
+      }
+    ]
+  }
+})
+```
+
+**Tick Data Format**:
+
+```json
+{
+  "exchange_type": 2,
+  "token": "42345",
+  "sequence_number": 12345,
+  "exchange_timestamp": 1705315200000,
+  "last_traded_price": 15000,
+  "last_traded_quantity": 50,
+  "last_traded_time": 1705315200,
+  "average_traded_price": 14950,
+  "volume_trade_for_the_day": 1234567,
+  "total_buy_quantity": 500000,
+  "total_sell_quantity": 450000,
+  "open_price_of_the_day": 14900,
+  "high_price_of_the_day": 15100,
+  "low_price_of_the_day": 14850,
+  "closed_price": 14950,
+  "best_5_buy_data": [...],
+  "best_5_sell_data": [...]
+}
+```
+
+**Heartbeat**:
+
+```
+// Send ping every 30 seconds
+send({
+  "action": 2,  // Heartbeat
+  "params": {
+    "mode": 3,
+    "tokenList": []
+  }
+})
+
+// Expect pong within 90 seconds or reconnect
+```
+
+---
+
+### 3. Instrument Master Download
+
+**Daily Task** (before market open):
+
+```
+1. Download CSV
+   GET https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json
+
+   Note: Despite URL, this returns JSON, not CSV
+
+2. Parse JSON Response
+   Structure: [
+     {
+       "token": "42345",
+       "symbol": "NIFTY25JAN23450CE",
+       "name": "NIFTY",
+       "expiry": "30JAN2025",
+       "strike": "23450.00",
+       "lotsize": "50",
+       "instrumenttype": "OPTIDX",
+       "exch_seg": "NFO",
+       "tick_size": "5.00"
+     },
+     ...
+   ]
+
+3. Build Token Map
+   token_map = {}
+
+   for instrument in instruments:
+     if instrument.exch_seg == "NFO" and instrument.name == "NIFTY":
+       token_map[instrument.symbol] = {
+         "token": instrument.token,
+         "strike": float(instrument.strike),
+         "lotsize": int(instrument.lotsize),
+         "expiry": parse_date(instrument.expiry),
+         "tick_size": float(instrument.tick_size)
+       }
+
+4. Store Locally
+   save_json("data/instruments_YYYYMMDD.json", token_map)
+```
+
+**Expiry Detection**:
+
+```
+// NIFTY options expire on Thursdays
+// Format: "30JAN2025" → datetime(2025, 1, 30)
+
+function get_current_weekly_expiry():
+  today = date.today()
+
+  // Find next Thursday
+  days_ahead = (3 - today.weekday()) % 7  // 3 = Thursday
+  if days_ahead == 0 and time.now() >= time(15, 30):
+    days_ahead = 7  // After expiry time, use next week
+
+  expiry = today + timedelta(days=days_ahead)
+  return expiry
+```
+
+---
+
+### 4. Order Placement
+
+**Place Order API**:
+
+```
+POST /api/v1/order/place
+Headers: {
+  "Authorization": "Bearer {jwtToken}",
+  "Content-Type": "application/json"
+}
+Body: {
+  "variety": "NORMAL",
+  "tradingsymbol": "NIFTY25JAN23450CE",
+  "symboltoken": "42345",
+  "transactiontype": "BUY",
+  "exchange": "NFO",
+  "ordertype": "LIMIT",
+  "producttype": "INTRADAY",  // or "CARRYFORWARD"
+  "duration": "DAY",
+  "price": "150.50",
+  "squareoff": "0",
+  "stoploss": "0",
+  "quantity": "50"
+}
+
+Response (Success):
+{
+  "status": true,
+  "message": "SUCCESS",
+  "orderid": "250115000012345"
+}
+
+Response (Failure):
+{
+  "status": false,
+  "message": "RMS Rule: Order price is out of price band",
+  "errorcode": "AB2001"
+}
+```
+
+**Order Status Check**:
+
+```
+GET /api/v1/order/{order_id}
+Headers: {
+  "Authorization": "Bearer {jwtToken}"
+}
+
+Response:
+{
+  "status": true,
+  "data": {
+    "orderid": "250115000012345",
+    "orderstatus": "complete",  // or "open", "rejected", "cancelled"
+    "filledshares": "50",
+    "unfilledshares": "0",
+    "price": "150.50",
+    "averageprice": "150.00",
+    "transactiontype": "BUY",
+    "updatetime": "15-Jan-2025 10:20:05"
+  }
+}
+```
+
+**Fill Monitoring Loop**:
+
+```
+async function wait_for_fill(order_id, timeout=60_seconds):
+  start_time = now()
+
+  while (now() - start_time) < timeout:
+    status = await get_order_status(order_id)
+
+    if status == "complete":
+      return {filled: true, avg_price: status.averageprice}
+
+    elif status in ["rejected", "cancelled"]:
+      return {filled: false, reason: status}
+
+    // Still pending, wait and retry
+    await sleep(1_second)
+
+  // Timeout reached
+  return {filled: false, reason: "TIMEOUT"}
+```
+
+---
+
+### 5. Historical Data Fetching
+
+**API Endpoint**:
+
+```
+POST /api/v1/getCandleData
+Headers: {
+  "Authorization": "Bearer {jwtToken}"
+}
+Body: {
+  "exchange": "NSE",
+  "symboltoken": "99926000",  // NIFTY 50
+  "interval": "ONE_HOUR",  // or "ONE_MINUTE", "FIVE_MINUTE", "ONE_DAY"
+  "fromdate": "2025-01-01 09:15",
+  "todate": "2025-01-15 15:30"
+}
+
+Response:
+{
+  "status": true,
+  "data": [
+    ["2025-01-01T09:15:00+05:30", 23450.00, 23500.00, 23420.00, 23480.00, 1234567],
+    // [timestamp, open, high, low, close, volume]
+    ...
+  ]
+}
+```
+
+**Limitations**:
+
+- **Max 2000 candles** per request
+- **Rate limit**: 3 requests/second
+- **No options historical data** via API (only underlying indices)
+
+**Workaround for Options**:
+
+```
+// Options historical data NOT available via Angel One API
+// Must build from tick data or use alternative source
+
+Alternative: Maintain own bar database from WebSocket ticks
+```
+
+---
+
+### 6. Position & Holdings
+
+**Get Positions**:
+
+```
+GET /api/v1/position
+Headers: {
+  "Authorization": "Bearer {jwtToken}"
+}
+
+Response:
+{
+  "status": true,
+  "data": [
+    {
+      "tradingsymbol": "NIFTY25JAN23450CE",
+      "symboltoken": "42345",
+      "producttype": "INTRADAY",
+      "exchange": "NFO",
+      "netqty": "50",  // Positive = long, negative = short
+      "avgprice": "150.00",
+      "ltp": "155.00",
+      "pnl": "250.00",
+      "pnlpercentage": "3.33"
+    }
+  ]
+}
+```
+
+**Reconciliation**:
+
+```
+// Daily reconciliation (after each trade)
+function reconcile_positions():
+  broker_positions = fetch_broker_positions()
+  local_positions = load_local_positions()
+
+  for broker_pos in broker_positions:
+    local_pos = local_positions.find(symbol=broker_pos.tradingsymbol)
+
+    if local_pos is None:
+      log_critical("Unknown position in broker", broker_pos)
+      alert_operator()
+
+    elif local_pos.quantity != broker_pos.netqty:
+      log_critical("Position quantity mismatch",
+                   local=local_pos.quantity,
+                   broker=broker_pos.netqty)
+
+      // Use broker as source of truth
+      local_pos.quantity = broker_pos.netqty
+      save_positions()
+```
+
+---
+
+### 7. Rate Limiting
+
+**Angel One Limits**:
+
+- **Order placement**: 10 requests/second
+- **Market data (REST)**: 3 requests/second
+- **Historical data**: 3 requests/second
+- **WebSocket**: No explicit limit, but throttle subscriptions
+
+**Implementation** (Token Bucket):
+
+```
+class RateLimiter:
+  def __init__(self, rate, capacity):
+    self.rate = rate  // tokens per second
+    self.capacity = capacity
+    self.tokens = capacity
+    self.last_refill = time.now()
+
+  async def acquire():
+    while self.tokens < 1:
+      // Refill tokens
+      now = time.now()
+      elapsed = now - self.last_refill
+      refill_amount = elapsed * self.rate
+
+      self.tokens = min(self.capacity, self.tokens + refill_amount)
+      self.last_refill = now
+
+      if self.tokens < 1:
+        await sleep(0.1)  // Wait 100ms, try again
+
+    self.tokens -= 1
+
+// Usage
+order_limiter = RateLimiter(rate=10, capacity=10)
+
+async function place_order_with_limit(...):
+  await order_limiter.acquire()
+  return await place_order(...)
+```
+
+---
+
+### 8. Known Quirks & Workarounds
+
+#### Quirk 1: Token Refresh Doesn't Extend WebSocket
+
+**Problem**: After JWT refresh, feed token remains tied to old session.
+
+**Workaround**:
+
+```
+On token refresh:
+  1. Refresh JWT via REST API
+  2. Disconnect WebSocket
+  3. Wait 2 seconds
+  4. Reconnect WebSocket with new feed token from refresh response
+  5. Re-authenticate WebSocket
+  6. Resubscribe all symbols
+```
+
+#### Quirk 2: Historical Data for Options Not Available
+
+**Problem**: Angel One API doesn't provide historical candle data for options.
+
+**Workaround**:
+
+```
+Build your own bar database from WebSocket ticks:
+  - Store every tick to JSON
+  - Aggregate into 1m, 5m, 15m, 1h bars
+  - Persist bars to disk for recovery
+```
+
+#### Quirk 3: Order Status Not Pushed
+
+**Problem**: No WebSocket updates for order fills.
+
+**Workaround**:
+
+```
+Poll order status every 1 second for up to 60 seconds:
+
+  while not filled and elapsed < 60s:
+    status = get_order_status(order_id)
+    if status == "complete":
+      break
+    sleep(1s)
+```
+
+#### Quirk 4: Instrument Master URL Confusing
+
+**Problem**: URL says "CSV" but returns JSON.
+
+**Workaround**:
+
+```
+Always parse as JSON, not CSV:
+  response = requests.get(url)
+  instruments = response.json()  // Not CSV
+```
+
+#### Quirk 5: WebSocket Mode Must Be Consistent
+
+**Problem**: Cannot mix mode 1 (LTP) and mode 3 (snap quote) on same connection.
+
+**Workaround**:
+
+```
+Choose mode 3 (snap quote) for all symbols:
+  - Provides full depth
+  - Slightly more bandwidth but complete data
+```
+
+#### Quirk 6: Expiry Date Format Varies
+
+**Problem**: Instrument master uses "30JAN2025", but order API uses "30-Jan-2025" or "2025-01-30".
+
+**Workaround**:
+
+```
+Normalize all dates internally to ISO format:
+  internal_format = "2025-01-30"
+
+Convert when calling API:
+  angel_format = "30-Jan-2025"
+```
+
+---
+
+## Rust Implementation Guidelines
+
+### 1. Project Structure
+
+```
+rustro/
+├── Cargo.toml
+├── src/
+│   ├── main.rs
+│   ├── config/
+│   │   ├── mod.rs
+│   │   └── settings.rs
+│   ├── broker/
+│   │   ├── mod.rs
+│   │   ├── angel_one.rs      // REST API client
+│   │   ├── websocket.rs       // WebSocket client
+│   │   └── types.rs           // Broker-specific types
+│   ├── events/
+│   │   ├── mod.rs
+│   │   ├── bus.rs             // Event pub/sub
+│   │   ├── types.rs           // Event definitions
+│   │   └── ledger.rs          // Event logging
+│   ├── data/
+│   │   ├── mod.rs
+│   │   ├── tick.rs            // Tick aggregation
+│   │   ├── bar.rs             // Bar construction
+│   │   ├── storage.rs         // JSON I/O
+│   │   └── gap.rs             // Gap detection/recovery
+│   ├── strategy/
+│   │   ├── mod.rs
+│   │   ├── adx.rs             // ADX calculation
+│   │   ├── rsi.rs             // RSI calculation
+│   │   ├── ema.rs             // EMA calculation
+│   │   ├── daily.rs           // Daily direction
+│   │   ├── hourly.rs          // Hourly alignment
+│   │   └── triggers.rs        // Entry triggers
+│   ├── orders/
+│   │   ├── mod.rs
+│   │   ├── validator.rs       // Pre-order checks
+│   │   ├── submitter.rs       // Order placement
+│   │   ├── retry.rs           // Retry logic
+│   │   └── monitor.rs         // Fill monitoring
+│   ├── positions/
+│   │   ├── mod.rs
+│   │   ├── tracker.rs         // Position tracking
+│   │   ├── stops.rs           // SL/trailing/target
+│   │   └── exits.rs           // Exit logic
+│   ├── risk/
+│   │   ├── mod.rs
+│   │   ├── vix.rs             // VIX monitoring
+│   │   ├── limits.rs          // Daily/consecutive limits
+│   │   ├── margin.rs          // Margin checks
+│   │   └── sizer.rs           // Position sizing
+│   ├── time/
+│   │   ├── mod.rs
+│   │   ├── session.rs         // Market session
+│   │   ├── calendar.rs        // Holiday calendar
+│   │   └── timers.rs          // Entry window, EOD
+│   └── utils/
+│       ├── mod.rs
+│       ├── idempotency.rs     // Key generation
+│       ├── rate_limit.rs      // Token bucket
+│       └── logging.rs         // Structured logging
+```
+
+---
+
+### 2. Key Crates
+
+```toml
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.21"  # WebSocket client
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Time & Date
+chrono = "0.4"
+chrono-tz = "0.8"  # For IST timezone
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# Configuration
+config = "0.13"
+toml = "0.8"
+
+# Hashing (for idempotency keys)
+sha2 = "0.10"
+
+# CSV parsing (for instrument master)
+csv = "1"
+
+# Async channels
+tokio = { version = "1", features = ["sync"] }
+```
+
+---
+
+### 3. Event Bus Pattern
+
+```rust
+use tokio::sync::mpsc;
+use std::sync::Arc;
+
+#[derive(Clone, Debug)]
+pub enum Event {
+    BarReady { symbol: String, timeframe: String, bar_time: i64 },
+    SignalGenerated { symbol: String, side: String, strike: i32 },
+    OrderExecuted { order_id: String, fill_price: f64 },
+    // ... all 52 events
+}
+
+pub struct EventBus {
+    tx: mpsc::UnboundedSender<Event>,
+    rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<Event>>>,
+}
+
+impl EventBus {
+    pub fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
+    }
+
+    pub fn emit(&self, event: Event) {
+        self.tx.send(event).unwrap();
+    }
+
+    pub async fn subscribe(&self) -> mpsc::UnboundedReceiver<Event> {
+        // Clone receiver for multiple subscribers
+        // (requires additional logic for true pub/sub)
+    }
+}
+```
+
+---
+
+### 4. Shared State Pattern
+
+```rust
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<Config>,
+    pub positions: Arc<RwLock<Vec<Position>>>,
+    pub daily_direction: Arc<RwLock<String>>,
+    pub hourly_aligned: Arc<RwLock<bool>>,
+    pub accepting_entries: Arc<RwLock<bool>>,
+    pub vix_spike_active: Arc<RwLock<bool>>,
+}
+
+impl AppState {
+    pub fn new(config: Config) -> Self {
+        Self {
+            config: Arc::new(config),
+            positions: Arc::new(RwLock::new(Vec::new())),
+            daily_direction: Arc::new(RwLock::new(String::from("NO_TRADE"))),
+            hourly_aligned: Arc::new(RwLock::new(false)),
+            accepting_entries: Arc::new(RwLock::new(false)),
+            vix_spike_active: Arc::new(RwLock::new(false)),
+        }
+    }
+
+    pub async fn add_position(&self, position: Position) {
+        let mut positions = self.positions.write().await;
+        positions.push(position);
+    }
+}
+
+// Usage in handlers
+async fn handle_position_opened(state: Arc<AppState>, event: PositionOpenedEvent) {
+    state.add_position(event.to_position()).await;
+}
+```
+
+---
+
+### 5. Atomic JSON Writes
+
+```rust
+use std::fs;
+use std::path::Path;
+use serde::Serialize;
+
+pub fn save_json_atomic<T: Serialize>(path: &Path, data: &T) -> anyhow::Result<()> {
+    // Write to temp file first
+    let temp_path = path.with_extension("tmp");
+    let json = serde_json::to_string_pretty(data)?;
+    fs::write(&temp_path, json)?;
+
+    // Atomic rename (on same filesystem)
+    fs::rename(&temp_path, path)?;
+
+    Ok(())
+}
+
+// Usage
+save_json_atomic(Path::new("state/positions.json"), &positions)?;
+```
+
+---
+
+### 6. Error Handling
+
+```rust
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum TradingError {
+    #[error("WebSocket connection failed: {0}")]
+    WebSocketError(String),
+
+    #[error("Order rejected by broker: {0}")]
+    OrderRejected(String),
+
+    #[error("Insufficient margin: required {required}, available {available}")]
+    InsufficientMargin { required: f64, available: f64 },
+
+    #[error("Token expired at {expiry}")]
+    TokenExpired { expiry: String },
+
+    #[error("Data gap detected: {duration_sec}s")]
+    DataGap { duration_sec: i64 },
+}
+
+// Usage
+fn place_order() -> Result<Order, TradingError> {
+    if margin < required {
+        return Err(TradingError::InsufficientMargin {
+            required,
+            available: margin,
+        });
+    }
+    // ...
+}
+```
+
+---
+
+### 7. Graceful Shutdown
+
+```rust
+use tokio::signal;
+
+#[tokio::main]
+async fn main() {
+    // Setup
+    let state = Arc::new(AppState::new(config));
+    let event_bus = Arc::new(EventBus::new());
+
+    // Spawn tasks
+    let ws_handle = tokio::spawn(websocket_task(state.clone()));
+    let strategy_handle = tokio::spawn(strategy_task(state.clone(), event_bus.clone()));
+
+    // Wait for Ctrl+C
+    signal::ctrl_c().await.unwrap();
+
+    println!("Shutdown signal received, closing positions...");
+
+    // Emit shutdown event
+    event_bus.emit(Event::SystemShutdown { reason: "USER_INTERRUPT".into() });
+
+    // Wait for all positions to close (with timeout)
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        close_all_positions(state.clone())
+    ).await.ok();
+
+    // Cancel all tasks
+    ws_handle.abort();
+    strategy_handle.abort();
+
+    println!("Shutdown complete");
+}
+```
+
+---
+
 **END OF SPECIFICATION**
 
 **Version**: 2.0  
 **Last Updated**: 2025-01-15  
 **Maintainers**: Development Team  
-**Status**: Ready for Implementation
+**Status**: Ready for Implementation  
+**Document Length**: 3,500+ lines  
+**Coverage**: Complete implementation guide with zero ambiguity
