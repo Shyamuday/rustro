@@ -137,7 +137,9 @@ audit_trail_enabled = true
 # ============================================
 # Broker Credentials (USE ENVIRONMENT VARIABLES IN PRODUCTION!)
 # ============================================
-angel_one_client_code = "YOUR_CLIENT_CODE"
-angel_one_password = "YOUR_PASSWORD"
-angel_one_totp_secret = "YOUR_TOTP_SECRET"
+angel_one_client_code = "S736247"
+angel_one_password = "541992"
+angel_one_totp_secret = "YOUR_TOTP_SECRET_HERE"  # Get base32 secret from authenticator app
+angel_one_api_key = "TJrbZ2ba"
+angel_one_secret_key = "c3359fe8-44a8-48f7-8a49-5ef84d780ea4"
 
