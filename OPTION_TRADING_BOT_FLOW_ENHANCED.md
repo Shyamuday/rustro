@@ -17,21 +17,19 @@
     - **If non-trading day**: Continue with data management mode (no live trading)
 - **Step 2: Token Validation & Session Check**
   - Load stored access token from configuration
-  - Test token validity with simple API call (kite.profile())
+  - Test token validity with simple API call (Angel One SmartAPI profile/portfolio endpoint)
   - **Session Duration Check**: Verify token will remain valid until market close (3:30 PM)
   - **If token invalid or expires before market close**: Proceed to auto-login
   - **If token valid for entire trading day**: Continue with system initialization
-- **Step 3: Automated Login Process**
-  - **Auto-Open Browser**: Automatically open Kite login page
-  - **Pre-filled URL**: Include API key in login URL
-  - **User Interaction**: Prompt user to enter TOTP only
-  - **Token Extraction**: Automatically capture request_token from redirect URL
-  - **Token Exchange**: Convert request_token to access_token
-  - **Token Storage**: Save new access_token to configuration
+- **Step 3: SmartAPI Session Generation**
+  - **REST Authentication**: Use Angel One SmartAPI session generation endpoint (approved flow only)
+  - **Credentials**: Provide client code, password, and TOTP per SmartAPI spec (no browser automation)
+  - **Tokens**: Obtain `jwtToken` for REST and `feedToken` for WebSocket streaming
+  - **Token Storage**: Save tokens to secure OS storage (e.g., Windows Credential Manager), not plaintext
 - **Step 4: Final Validation**
   - Test new token with API call
   - Verify all required permissions
-  - Initialize KiteConnect with valid token
+  - Initialize SmartAPI clients (REST and WebSocket) with valid tokens
   - Confirm system ready for trading
 
 ### 1.2 Configuration Loading
@@ -42,32 +40,32 @@
 - Load strategy parameters
 - Set up logging and monitoring
 
-### 1.3 Token Management & Authentication
+### 1.3 Token Management & Authentication (Angel One SmartAPI)
+
+- This section supersedes token/auth notes in 1.1; follow this SmartAPI-centric flow.
 
 - **Token Validation Process**:
   - Load stored access token from secure storage
-  - Test token validity with kite.profile() API call
+  - Test token validity with Angel One SmartAPI account/profile endpoint
   - **Critical: Session Duration Check**: Verify token will remain valid until market close (3:30 PM)
-  - **If token invalid or expires before market close**: Proceed to auto-login
+  - **If token invalid or expires before market close**: Generate a new session per SmartAPI
   - **If token valid for entire trading day**: Continue with system initialization
-- **Automated Login Workflow**:
-  - **Browser Automation**: Use Selenium WebDriver for browser control
-  - **Auto-Open Browser**: Automatically open Kite login page with API key
-  - **User Interaction**: Prompt user to enter TOTP only (username/password pre-filled)
-  - **Token Capture**: Monitor redirect URL for request_token extraction
-  - **Token Exchange**: Convert request_token to access_token via API
-  - **Token Storage**: Save new access_token to configuration
-- **Critical: Daily Token Expiry Handling**:
-  - **Token Expiry**: Access tokens expire daily after market close (~4:00 PM)
-  - **Pre-Market Validation**: Check token validity before 9:15 AM
+- **SmartAPI Session Workflow**:
+  - **REST Authentication**: Use Angel One SmartAPI session generation endpoint
+  - **Credentials**: Provide client code, password, and TOTP per SmartAPI spec
+  - **Tokens**: Obtain `jwtToken` for REST and `feedToken` for WebSocket streaming
+  - **Secure Storage**: Store tokens in OS keychain/DPAPI; never plaintext or logs
+- **Critical: Daily Token/Session Handling**:
+  - **Token Expiry**: SmartAPI sessions typically expire daily; verify current policy in docs
+  - **Pre-Market Validation**: Check token validity before 9:15 AM; refresh proactively if near expiry
   - **Session Duration Check**: Verify token will remain valid until 3:30 PM
-  - **During Trading**: Monitor token validity every 5 minutes
-  - **Emergency Response**: Pause trading if token expires during market hours
-  - **User Notification**: Alert user when token needs refresh
+  - **During Trading**: Monitor REST auth and WS `feedToken` health every 5 minutes
+  - **Emergency Response**: Pause trading if token/WS auth expires during market hours
+  - **User Notification**: Alert user when token refresh is required per TOS
 - **Continuous Session Monitoring**:
   - **Pre-Trading Check**: Ensure token valid for entire trading day
   - **Mid-Session Check**: Monitor token status every 5 minutes
-  - **Proactive Re-login**: Re-login if token expires before market close
+  - **Proactive Re-login**: Renew session if token expires before market close
   - **Trading Continuity**: Prevent disruption during active trading hours
 - **Error Handling**:
   - Handle login failures gracefully
@@ -149,7 +147,7 @@
   - Fetch option chain data periodically
   - Get margin and position details
   - Check instrument status and validity
-  - **When to use**: Every 5-10 minutes, on-demand queries, validation
+  - **When to use**: Top-of-book strikes every 1-2 minutes; full chain every 5-10 minutes; on-demand queries; validation
 
 - **WebSocket**:
 
@@ -159,21 +157,42 @@
   - Live P&L and position monitoring
   - **When to use**: During active trading hours, real-time decisions
 
-- **Raw Tick Data Storage**:
-  - **Duration**: 2 days only (for gap detection and 1m bar construction)
-  - **Storage**: `raw/[symbol]_today.json`, `raw/[symbol]_yesterday.json`
-  - **Purpose**: Build 1-minute bars, detect gap openings
-  - **Daily Rotation Process**:
-    - **End of Day (3:30 PM)**:
-      - Process all ticks from `today.json` into timeframes
-      - Rename `today.json` → `yesterday.json`
-      - Delete old `yesterday.json` (now 2 days old)
-    - **New Day (9:15 AM)**:
-      - Create new `today.json` for current day
-      - Start collecting new tick data
-    - **Gap Detection**:
-      - Compare `today.json` open with `yesterday.json` close
-      - Use `yesterday.json` for gap calculation
+#### 2.1.1 JSON Schemas (storage format)
+
+```json
+{
+  "raw_tick": {
+    "ts_exchange": "2025-10-15T09:15:00.123+05:30", // exchange timestamp if available
+    "ts_utc": "2025-10-15T03:45:00.123Z", // system UTC timestamp
+    "symbol": "NIFTY",
+    "token": 12345,
+    "ltp": 23456.7,
+    "bid": 23456.5,
+    "ask": 23456.9,
+    "volume": 1000
+  },
+  "bar_1m": {
+    "start_ts_utc": "2025-10-15T03:45:00Z",
+    "end_ts_utc": "2025-10-15T03:46:00Z",
+    "o": 23450.0,
+    "h": 23470.0,
+    "l": 23445.0,
+    "c": 23465.0,
+    "v": 12000
+  }
+}
+```
+
+- **Time convention**: Store times in UTC; preserve broker exchange timestamps when provided; NTP-sync system clock.
+- **Data fidelity**: WebSocket ticks are snapshots; reconcile 1m OHLC with official historical candles at EOD or on reconnect. Never interpolate options.
+
+#### 2.1.0 SmartAPI-only Data Policy (Live Trading)
+
+- All live market data, quotes, and order events will be sourced exclusively from Angel One SmartAPI (REST + WebSocket)
+- Minute bars for both underlyings and options are constructed from SmartAPI WebSocket ticks; no third‑party feeds
+- Historical candles: use SmartAPI historical endpoints where available; otherwise rely on locally persisted bars built from SmartAPI ticks
+- Option chain: build from SmartAPI instrument master + live LTP via REST/WS; subscribe to a rotating subset of strikes as per rate/subscription limits
+- OI/Greeks: if SmartAPI returns these in quotes, consume them; otherwise proceed without them (strategy must not depend on non‑available fields)
 
 ### 2.2 Underlying-Options Data Sync Strategy
 
@@ -254,23 +273,22 @@
   - **Small Gaps**: Fill gaps <5 minutes for underlying data
   - **Large Gaps**: Discard bars with gaps >10 minutes
 
-### 2.5 Kite API Rate Limits & Management
+### 2.5 Angel One SmartAPI Rate Limits & Management
 
-- **Rate Limits**:
-  - **Historical API**: 3 requests per second
-  - **Market Data API**: 3 requests per second
-  - **WebSocket**: No rate limit (but connection limits apply)
-  - **Order API**: 3 requests per second
+- **Rate Limits** (verify with latest SmartAPI docs):
+  - **REST (market/order)**: Enforce per-second and per-minute limits
+  - **WebSocket**: Connection and subscription limits apply
+  - **Historical**: Throttled; batch and cache where possible
 - **Rate Limit Handling**:
   - **Request Queuing**: Queue requests to stay within limits
-  - **Exponential Backoff**: Retry with increasing delays on 429 errors
+  - **Exponential Backoff**: Retry with increasing delays on 429/5xx
   - **Request Batching**: Combine multiple requests where possible
   - **Priority System**: Critical requests (orders) get priority
 - **Optimization Strategies**:
   - **Cache Data**: Store frequently accessed data locally
-  - **Batch Requests**: Use kite.quote() for multiple instruments
+  - **Batch Requests**: Use SmartAPI bulk quote endpoints where available
   - **WebSocket Priority**: Use WebSocket for real-time data
-  - **Scheduled Updates**: Update non-critical data every 5-10 minutes
+  - **Scheduled Updates**: Update non-critical data per cadence above
 
 ## 3. Token Management & ATM Selection
 
@@ -303,14 +321,14 @@
 - **Stock Options (RELIANCE, TCS, etc.)**:
   - Physical settlement (delivery required)
   - Higher margin requirements near expiry
-  - Monthly expiry only
+  - Expiry cadence varies by symbol; many have weekly expiries. Verify availability per symbol.
   - Lower liquidity, higher spreads
 
 ### 3.3 ADX-Based Token Categorization & ATM Management
 
 - **Stock Categorization Process**:
   - **Category 1 - Buy CE**: ADX > 25, +DI > -DI, volume > average
-  - **Category 2 - Buy PE**: ADX > 25, -DI > -DI, volume > average
+  - **Category 2 - Buy PE**: ADX > 25, -DI > +DI, volume > average
   - **Category 3 - No Trade**: ADX < 20 or +DI ≈ -DI or low volume
 - **Token Pool Management by Category**:
   - **Category 1 Tokens**: Maintain CE tokens for bullish stocks
@@ -318,9 +336,10 @@
   - **Category 3 Tokens**: Remove from active trading pool
   - **Daily Rebalancing**: Update token pools based on new ADX values
 - **ATM Calculation & Monitoring**:
-  - **ATM Calculation**: Current underlying price ± 50 points (adjustable)
+  - **ATM Definition**: Nearest listed strike to the underlying LTP
+  - **Strike Increments**: NIFTY 50 pts, BANKNIFTY 100 pts, FINNIFTY 50 pts (verify per contract)
   - **Price Monitoring**: Track underlying price changes every 5-10 seconds
-  - **ATM Update Trigger**: When price moves >50 points from current ATM
+  - **ATM Update Trigger**: When price moves >1 strike from current ATM
   - **Strike Range**: Monitor 5-10 strikes around current ATM
 - **Category-Specific Token Selection**:
   - **CE Token Selection**: For Category 1 stocks, select CE strikes at ATM
@@ -357,9 +376,9 @@
 ### 4.1 Volatility Detection
 
 - **VIX Monitoring**: Track INDIA VIX levels and intraday changes
-  - Get instrument token for "INDIA VIX" from instruments list
-  - Fetch live VIX value using kite.ltp("NSE:INDIA VIX")
-  - Subscribe to VIX via WebSocket for real-time updates
+  - Resolve correct Angel One symbol/token for INDIA VIX (often "INDIAVIX"); verify via instruments dump
+  - Fetch live VIX value using SmartAPI quote/LTP endpoint
+  - Subscribe to VIX via WebSocket using `feedToken`
   - **VIX Spike Detection**: Monitor VIX changes >5 points in 10 minutes
   - **VIX Circuit Breaker**: Stop trading if VIX jumps >7 points in 5 minutes
 - **Intraday Volatility Thresholds**:
@@ -398,6 +417,7 @@
 - **Position Duration**: Reduce holding time to 15-30 minutes
 - **Delta Management**: Monitor and hedge delta exposure
 - **Margin Monitoring**: Increase margin buffer by 25%
+- **Global Kill-Switch**: On trigger, cancel open orders, close positions safely, and halt trading
 
 ## 5. Strategy Analysis & Signal Generation
 
@@ -452,7 +472,7 @@
 - **Daily ADX Calculation**: Calculate Average Directional Index on daily timeframe for each stock
 - **Stock Categorization Process**:
   - **Category 1 - Buy CE**: ADX > 25, +DI > -DI, volume increasing
-  - **Category 2 - Buy PE**: ADX > 25, -DI > -DI, volume increasing
+  - **Category 2 - Buy PE**: ADX > 25, -DI > +DI, volume increasing
   - **Category 3 - No Trade**: ADX < 20 or +DI ≈ -DI or low volume
 - **Category 1 - Buy CE Stocks**:
   - **Criteria**: ADX > 25, +DI > -DI, volume > average
@@ -460,7 +480,7 @@
   - **ATM Selection**: Select CE strikes closest to current stock price
   - **Strike Range**: ±50 points around current price for liquidity
 - **Category 2 - Buy PE Stocks**:
-  - **Criteria**: ADX > 25, -DI > -DI, volume > average
+  - **Criteria**: ADX > 25, -DI > +DI, volume > average
   - **Option Selection**: Buy corresponding PE (Put) options
   - **ATM Selection**: Select PE strikes closest to current stock price
   - **Strike Range**: ±50 points around current price for liquidity
@@ -503,7 +523,7 @@
   - Store order ID mapping in database
   - Check for existing orders before retry
 - **Order Verification Process**:
-  - **Place Order**: Submit order via Kite API
+  - **Place Order**: Submit order via Angel One SmartAPI
   - **Get Order ID**: Store returned order ID
   - **Verify Fill**: Check order book for execution confirmation
   - **Status Validation**: Verify order status (COMPLETE, REJECTED, PENDING)
@@ -517,7 +537,7 @@
   - **Exponential Backoff**: Retry with increasing delays (1s, 2s, 4s)
   - **Max Retries**: Limit to 3 retry attempts
   - **Error Handling**: Log and handle API errors gracefully
-  - **Duplicate Prevention**: Check existing orders before retry
+  - **Duplicate Prevention**: Use app-side deduplication by hashing order intent to avoid duplicates on retries
 
 ### 6.3 Order Execution Confirmation
 
@@ -572,7 +592,6 @@
 - **Weekend Mode**: System maintenance and data backup
 - **Holiday Mode**: Skip trading, update holiday calendar
 - **Early Closure**: Handle special market hours (e.g., Diwali)
-- **Session Breaks**: Handle lunch breaks if applicable
 - **Emergency Closure**: Handle unexpected market shutdowns
 - **Position Management**: Close positions before market close
 
@@ -702,7 +721,7 @@
   - **Maintenance Data**: Token lists and instrument data
 - **Smart Data Refresh Logic**:
   - **Real-time Data**: Update every 1-5 seconds during trading
-  - **Option Chain**: Update every 5-10 minutes
+  - **Option Chain**: Top-of-book strikes every 1-2 minutes; full chain every 5-10 minutes
   - **Historical Data**: Update daily after market close
   - **Token Data**: Update monthly or when new contracts available
 - **Data Quality Validation**:
@@ -1094,9 +1113,24 @@ This enhanced version provides comprehensive guidance for implementation with in
 
 ## 12. Rust + Angel One API Implementation Gap Analysis
 
+### 12.9 Rust Runtime Architecture
+
+- **Crates**: `tokio` (runtime), `reqwest` (REST), `tokio-tungstenite` (WS), `serde/serde_json` (data), `thiserror` (errors), `tracing` (logging)
+- **Broker Abstraction**: Define a `Broker` trait with methods for auth, quotes, order placement, positions, and WS subscriptions. Implement `AngelOneBroker` for SmartAPI.
+- **Tasks (async services)**:
+  - **Auth Service**: Manages session (`jwtToken`, `feedToken`), refresh, and secure storage
+  - **Market Data Service**: REST polling + WS streaming, publishes normalized ticks and candles
+  - **Strategy Service**: Consumes signals, performs MTF analysis, generates trade intents
+  - **Risk Service**: Enforces circuit breakers, daily loss limits, kill-switch
+  - **Order Service**: Places/modifies/cancels orders, idempotency, fill verification
+  - **Persistence Service**: Writes JSON files, handles rotation and atomic writes
+- **Communication**: Use `tokio::sync::mpsc` channels for events; define typed messages for safety
+- **State & Time**: Keep clocks NTP-synced; store timestamps in UTC, include exchange ts when available
+- **Testing**: Unit tests for indicators, integration tests with mocked SmartAPI, replay engine for WS data
+
 ### 12.1 API Integration
 
-- **Angel One API Mapping**: All references to Kite API (e.g., `kite.profile()`, `kite.ltp()`, order placement, WebSocket) must be mapped to Angel One equivalents. Angel One’s endpoints, authentication, and data formats differ.
+- **Angel One API Mapping**: Document SmartAPI endpoints for auth, quotes, orders, positions, and WebSocket; note Angel One’s endpoints, authentication, and data formats.
 - **Rust SDK**: No official Rust SDK for Angel One. You must implement REST and WebSocket clients using crates like `reqwest` (HTTP) and `tokio-tungstenite` (WebSocket).
 - **Authentication**: Angel One uses OAuth2 and session tokens. Update login/session logic accordingly.
 
@@ -1109,7 +1143,7 @@ This enhanced version provides comprehensive guidance for implementation with in
 
 ### 12.3 Angel One API Limitations
 
-- **Rate Limits**: Angel One’s rate limits may differ from Kite. Validate and update request queuing, batching, and backoff strategies.
+- **Rate Limits**: Validate current SmartAPI limits; update request queuing, batching, and backoff strategies.
 - **Order Types**: Confirm support for all required order types (market, limit, bracket, cover, etc.) and execution features.
 - **WebSocket Features**: Ensure Angel One’s WebSocket provides all necessary real-time data (LTP, option chain, order status).
 
@@ -1136,7 +1170,7 @@ This enhanced version provides comprehensive guidance for implementation with in
 
 ### 12.8 Documentation & API Differences
 
-- **Document Angel One API endpoints** and differences from Kite for future maintainability.
+- **Document Angel One API endpoints** and data models for future maintainability.
 - **Update all code references** and examples to Angel One API.
 
 ---
@@ -1144,3 +1178,231 @@ This enhanced version provides comprehensive guidance for implementation with in
 **Summary:**  
 This gap analysis highlights the key areas to address for a robust Rust + Angel One option trading bot.  
 Prioritize API mapping, async architecture, error handling, compliance, and advanced analytics for production readiness.
+
+## Terminology Consistency
+
+- Use `Angel One SmartAPI` consistently throughout
+- Use `jwtToken` (REST) and `feedToken` (WebSocket) for auth
+- Refer to `SmartAPI` for endpoints, quotes, and order placement
+- Rust-specific: use `tokio`, `reqwest`, `tokio-tungstenite`, `serde`, `tracing`
+
+## 13. Go-Live Checklist & Production Readiness
+
+### 13.1 Broker, Legal, and TOS
+
+- Confirm SmartAPI automated trading is permitted for your account; sign API agreements
+- Respect RMS constraints: freeze quantity, price bands, lot multiples, min tick
+- Validate allowed order types (MIS/CNC/NRML), intraday vs carry-forward rules
+- Keep instrument master in sync; handle symbol changes and contract rollovers
+
+### 13.2 Execution Protections
+
+- Price protection: max slippage fences; reject fills beyond thresholds
+- Quote-depth-aware limit pricing; prefer limits over markets; allow IOC/FOK when needed
+- Per-second and per-minute order throttling; backoff on rejects
+- Persist idempotency/intent hashes to avoid duplicates across restarts
+
+### 13.3 Reconciliation & Charges
+
+- EOD reconcile orders, trades, positions, and funds with broker reports
+- Break-glass flow for mismatches: flag, halt trading, require manual ACK
+- Full fees model: brokerage, STT, GST, exchange/SEBI fees, stamp duty, DP
+- P&L parity: net of all charges; variance thresholds and alerts
+
+### 13.4 Observability
+
+- Metrics: API latency, error rate, WS reconnects, order rejects, slippage, P&L, drawdown
+- Structured logs with trace IDs and correlation between order intent → order → trade
+- Alerts: email/pager thresholds for token expiry, WS down, reject spikes, loss limits
+- Dashboards: live positions, exposure, margin, risk states, health
+
+### 13.5 Runbooks
+
+- Incident response steps for common failures (auth, WS, rejects, data gaps)
+- Manual kill‑switch and flatten procedure; who/when gets paged
+- Market halt or extraordinary volatility procedure
+- Restart/recovery steps and validation checklist
+
+### 13.6 Resilience & Recovery
+
+- WS heartbeat, jittered reconnects, exponential backoff; cap retries with circuit breaker
+- REST retry policy with idempotency; fast‑fail on validation errors
+- Persistent queues/backpressure to avoid data loss under load
+- Crash‑safe state: persist open intents, orders, positions; rebuild on restart
+
+### 13.7 Instrument & Calendar Upkeep
+
+- Auto-refresh instrument master daily; verify tokens/symbols for new weekly series
+- Validate lot sizes, tick sizes, trading status; purge expired contracts
+- Sync NSE holiday calendar and any special trading sessions
+
+### 13.8 Time & Clock Discipline
+
+- NTP-sync host clock; detect clock skew vs exchange timestamps
+- Store UTC in files/logs; display IST in UI
+- Prefer exchange timestamps when available over local time
+
+### 13.9 Risk Controls (Hard Caps)
+
+- Per-trade, per-day, and portfolio loss limits; consecutive‑loss lockout
+- Margin pre-checks (SPAN/Exposure) before order; pre‑trade notional caps
+- Position concentration and correlated exposure limits
+- VIX/volatility circuit breakers tied to position sizing and halts
+
+### 13.10 Security & Compliance
+
+- Secrets in OS vault; rotation policy; no secrets in logs
+- Role-based access, least privilege, audit log immutability and retention
+- Data retention policy for ticks/bars/logs per regulation and business need
+
+### 13.11 Testing Strategy
+
+- Replay/paper mode using recorded WS data; parity checks with live logic
+- Integration tests against SmartAPI sandbox or throttled prod; mock external deps
+- Soak tests and chaos tests (network blips, WS drops, partial outages)
+- Backtest vs live: include liquidity, spread, and fees; slippage modeling
+
+### 13.12 Operational Environment
+
+- Reliable host: UPS/VPS, redundant internet paths
+- Process supervision: service manager, watchdog, auto‑restart with backoff
+- Configuration gating: clear LIVE vs PAPER modes, feature flags
+- Versioned deploys with rollback and change logs
+
+## Appendix A. Angel One SmartAPI Endpoints and Rust Examples
+
+### A.1 Cargo Dependencies
+
+```toml
+[package]
+name = "smartapi-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json", "gzip", "brotli", "deflate", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tokio-tungstenite = "0.21"
+url = "2"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# windows credential manager example (optional)
+keyring = "2"
+```
+
+### A.2 Auth: Session Generation (REST)
+
+```rust
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize)]
+struct LoginRequest<'a> {
+    clientcode: &'a str,
+    password: &'a str,
+    totp: &'a str,
+}
+
+#[derive(Deserialize)]
+struct LoginResponse {
+    data: LoginData,
+}
+
+#[derive(Deserialize)]
+struct LoginData {
+    jwtToken: String,
+    feedToken: String,
+}
+
+pub async fn smartapi_login(client: &Client, url: &str, clientcode: &str, password: &str, totp: &str) -> anyhow::Result<(String, String)> {
+    let req = LoginRequest { clientcode, password, totp };
+    let resp = client.post(format!("{}/login", url)).json(&req).send().await?;
+    let body: LoginResponse = resp.error_for_status()?.json().await?;
+    Ok((body.data.jwtToken, body.data.feedToken))
+}
+```
+
+### A.3 Quotes/LTP (REST)
+
+```rust
+pub async fn ltp(client: &Client, base: &str, jwt: &str, symbol: &str) -> anyhow::Result<f64> {
+    let resp = client
+        .get(format!("{}/ltp?symbol={}", base, symbol))
+        .bearer_auth(jwt)
+        .send()
+        .await?;
+    let v = resp.error_for_status()?.json::<serde_json::Value>().await?;
+    Ok(v["data"]["ltp"].as_f64().unwrap_or(0.0))
+}
+```
+
+### A.4 WebSocket Ticker
+
+```rust
+use tokio_tungstenite::connect_async;
+use url::Url;
+
+pub async fn connect_ws(ws_url: &str, feed_token: &str, clientcode: &str) -> anyhow::Result<()> {
+    let url = Url::parse_with_params(ws_url, &[("feedToken", feed_token), ("clientcode", clientcode)])?;
+    let (ws, _) = connect_async(url).await?;
+    // subscribe message format depends on SmartAPI spec; send after connect
+    // ws.send(Message::text("{\"action\":\"subscribe\",...}"));
+    drop(ws);
+    Ok(())
+}
+```
+
+### A.5 Place Order (REST)
+
+```rust
+#[derive(Serialize)]
+struct OrderRequest<'a> {
+    symbol: &'a str,
+    transactiontype: &'a str, // BUY/SELL
+    ordertype: &'a str,       // LIMIT/MARKET
+    producttype: &'a str,     // MIS/CNC/NRML
+    quantity: i32,
+    price: f64,
+}
+
+pub async fn place_order(client: &Client, base: &str, jwt: &str, req: &OrderRequest<'_>) -> anyhow::Result<String> {
+    let resp = client
+        .post(format!("{}/orders", base))
+        .bearer_auth(jwt)
+        .json(req)
+        .send()
+        .await?;
+    let v = resp.error_for_status()?.json::<serde_json::Value>().await?;
+    Ok(v["data"]["orderid"].as_str().unwrap_or("").to_string())
+}
+```
+
+### A.6 Historical Candles
+
+```rust
+pub async fn candles(client: &Client, base: &str, jwt: &str, symbol: &str, interval: &str, from: &str, to: &str) -> anyhow::Result<Vec<[f64; 6]>> {
+    let resp = client
+        .get(format!("{}/historical?symbol={}&interval={}&from={}&to={}", base, symbol, interval, from, to))
+        .bearer_auth(jwt)
+        .send()
+        .await?;
+    let v = resp.error_for_status()?.json::<serde_json::Value>().await?;
+    // adapt shape per SmartAPI response
+    Ok(vec![])
+}
+```
+
+### A.7 Config and Secrets
+
+- Use env vars for `SMARTAPI_BASE_URL`, `SMARTAPI_WS_URL`, `SMARTAPI_CLIENT_CODE`, and store `password/TOTP` in OS vault (e.g., Windows Credential Manager via `keyring`).
+- Never log secrets. Rotate credentials periodically.
+
+### A.8 Retry, Backoff, and Idempotency
+
+- Wrap REST calls with exponential backoff; treat HTTP 4xx validation errors as non-retry
+- Persist a hash of order intent to dedupe retries and restarts
+- For WS, implement heartbeats and jittered reconnects
