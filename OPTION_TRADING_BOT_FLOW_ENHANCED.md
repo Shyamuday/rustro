@@ -2864,6 +2864,1199 @@ enable_cloud_backup = true
 - [ ] Operator training complete
 - [ ] Emergency contacts configured
 
+## 19. Technical Indicator Calculation Specifications
+
+### 19.1 ADX (Average Directional Index) Calculation
+
+#### 19.1.1 ADX Overview & Interpretation
+
+**ADX Purpose**: Measures trend strength on a 0-100 scale
+
+- **ADX < 20**: Weak trend, ranging market → Avoid trading
+- **ADX 20-25**: Emerging trend → Cautious entry
+- **ADX 25-50**: Strong trend → Ideal for trading
+- **ADX > 50**: Very strong trend → May be overextended, monitor closely
+
+**Usage in Strategy**: Categorize stocks for CE vs PE selection
+
+- Category 1 (Buy CE): ADX > 25 AND +DI > -DI
+- Category 2 (Buy PE): ADX > 25 AND -DI > +DI
+- Category 3 (No Trade): ADX < 20 OR directional indicators unclear
+
+#### 19.1.2 ADX Calculation Algorithm (14-period standard)
+
+**Step 1: Calculate True Range (TR) for each bar**
+
+- True Range = Maximum of:
+  - Current High - Current Low
+  - Absolute value of (Current High - Previous Close)
+  - Absolute value of (Current Low - Previous Close)
+- TR captures the full range of price movement including gaps
+
+**Step 2: Calculate Directional Movement (+DM and -DM)**
+
+- **+DM (Positive Directional Movement)**:
+  - If (Current High - Previous High) > (Previous Low - Current Low) AND (Current High - Previous High) > 0:
+    - +DM = Current High - Previous High
+  - Otherwise: +DM = 0
+- **-DM (Negative Directional Movement)**:
+  - If (Previous Low - Current Low) > (Current High - Previous High) AND (Previous Low - Current Low) > 0:
+    - -DM = Previous Low - Current Low
+  - Otherwise: -DM = 0
+
+**Step 3: Apply Wilder's Smoothing (14-period)**
+
+- **First Smoothed Value** = Sum of first 14 periods
+- **Subsequent Smoothed Values** = Previous Smoothed Value - (Previous Smoothed Value / 14) + Current Value
+- Apply smoothing to: TR, +DM, -DM
+
+**Step 4: Calculate Directional Indicators (+DI and -DI)**
+
+- **+DI** = (Smoothed +DM / Smoothed TR) × 100
+- **-DI** = (Smoothed -DM / Smoothed TR) × 100
+- These indicate the strength of upward vs downward movement
+
+**Step 5: Calculate Directional Index (DX)**
+
+- **DX** = (Absolute value of (+DI - -DI) / (+DI + -DI)) × 100
+- DX measures the difference between directional movements
+
+**Step 6: Calculate ADX (Average of DX)**
+
+- **First ADX** = Sum of first 14 DX values / 14
+- **Subsequent ADX** = ((Previous ADX × 13) + Current DX) / 14
+- ADX is a smoothed average of DX values
+
+#### 19.1.3 ADX Implementation Notes
+
+- **Minimum Data Required**: At least 28-30 bars for reliable ADX (14 for smoothing + 14 for ADX average)
+- **Update Frequency**: Recalculate daily after market close for categorization
+- **Storage**: Store ADX, +DI, -DI values for each symbol in daily timeframe data
+- **Validation**: Cross-check initial calculations against known reference implementations
+
+### 19.2 RSI (Relative Strength Index) Calculation
+
+#### 19.2.1 RSI Overview & Interpretation
+
+**RSI Purpose**: Measures momentum on 0-100 scale
+
+- **RSI < 30**: Oversold condition (potential reversal upward)
+- **RSI 30-40**: Pullback in uptrend → Entry zone for CE options
+- **RSI 40-60**: Neutral zone → No clear signal
+- **RSI 60-70**: Pullback in downtrend → Entry zone for PE options
+- **RSI > 70**: Overbought condition (potential reversal downward)
+
+**Usage in Strategy**: Fine-tune entry timing on 5-minute timeframe
+
+- Wait for RSI to reach entry zone before placing order
+- Confirm pullback is complete before entering
+
+#### 19.2.2 RSI Calculation Algorithm (14-period standard)
+
+**Step 1: Calculate Price Changes**
+
+- For each bar: Change = Current Close - Previous Close
+- If Change > 0: Gain = Change, Loss = 0
+- If Change < 0: Gain = 0, Loss = Absolute value of Change
+- If Change = 0: Gain = 0, Loss = 0
+
+**Step 2: Calculate Initial Average Gain and Loss**
+
+- **First Average Gain** = Sum of first 14 gains / 14
+- **First Average Loss** = Sum of first 14 losses / 14
+- Requires 14 bars of historical data minimum
+
+**Step 3: Apply Wilder's Smoothing for Subsequent Values**
+
+- **Average Gain** = ((Previous Average Gain × 13) + Current Gain) / 14
+- **Average Loss** = ((Previous Average Loss × 13) + Current Loss) / 14
+- This smoothing gives more weight to recent values
+
+**Step 4: Calculate Relative Strength (RS)**
+
+- **RS** = Average Gain / Average Loss
+- Special case: If Average Loss = 0, set RS to infinity (RSI = 100)
+
+**Step 5: Calculate RSI**
+
+- **RSI** = 100 - (100 / (1 + RS))
+- Result is a value between 0 and 100
+
+#### 19.2.3 RSI Implementation Notes
+
+- **Minimum Data Required**: 15 bars (14 for averaging + 1 for current)
+- **Update Frequency**: Recalculate on every new bar close (1-minute, 5-minute)
+- **Storage**: Maintain running state (average gain, average loss, previous close)
+- **Edge Cases**: Handle zero division when Average Loss = 0 (return RSI = 100)
+
+### 19.3 EMA (Exponential Moving Average) Calculation
+
+#### 19.3.1 EMA Overview & Purpose
+
+**EMA Purpose**: Trend-following indicator with more weight on recent prices
+
+- **Price above EMA**: Uptrend signal
+- **Price below EMA**: Downtrend signal
+- **EMA crossovers**: Trend change signals
+
+**Usage in Strategy**: Support/resistance validation
+
+- 15-minute low staying above EMA-20 confirms support (for CE entry)
+- 15-minute high staying below EMA-20 confirms resistance (for PE entry)
+- 5-minute price bouncing off EMA-9 provides entry trigger
+
+#### 19.3.2 EMA Calculation Algorithm
+
+**Step 1: Calculate Smoothing Multiplier**
+
+- **Multiplier** = 2 / (Period + 1)
+- Examples:
+  - 9-period EMA: Multiplier = 2 / 10 = 0.20
+  - 20-period EMA: Multiplier = 2 / 21 = 0.095
+
+**Step 2: Calculate First EMA**
+
+- **First EMA** = Simple Moving Average of first N periods
+- SMA = Sum of first N closing prices / N
+- This initializes the EMA calculation
+
+**Step 3: Calculate Subsequent EMA Values**
+
+- **EMA** = (Current Price × Multiplier) + (Previous EMA × (1 - Multiplier))
+- Alternative formula: EMA = Previous EMA + (Multiplier × (Current Price - Previous EMA))
+- This gives exponentially decreasing weight to older prices
+
+#### 19.3.3 EMA Implementation Notes
+
+- **Minimum Data Required**: N periods for initialization (9 or 20 bars)
+- **Update Frequency**: Recalculate on every new bar close
+- **Storage**: Maintain only the last EMA value (no need to store all history)
+- **Multiple EMAs**: Calculate EMA-9 and EMA-20 separately for each timeframe
+
+### 19.4 Volume Average Calculation
+
+#### 19.4.1 Volume Average Overview
+
+**Purpose**: Identify volume surges indicating strong moves
+
+- **Volume > 1.2× Average**: Strong move, valid signal
+- **Volume < 0.8× Average**: Weak move, questionable signal
+- **Volume > 3× Average**: Flash spike, potential reversal
+
+**Usage in Strategy**: Confirm entry signals
+
+- Entry requires: Current volume > 120% of average volume
+- Validates that price move has participation
+
+#### 19.4.2 Simple Volume Average (SMA) Calculation
+
+**Algorithm**:
+
+1. Maintain a rolling window of N volume values (e.g., 20 periods)
+2. On each new bar, add current volume to window
+3. If window size exceeds N, remove oldest volume value
+4. **Volume Average** = Sum of all volumes in window / Number of values in window
+
+**Comparison Logic**:
+
+- Calculate current volume as percentage of average: (Current Volume / Average Volume) × 100
+- If percentage > threshold (120%), volume condition is met
+
+#### 19.4.3 Volume Implementation Notes
+
+- **Period**: Use 20-period average for daily/hourly, 14-period for intraday
+- **Update Frequency**: Recalculate on every bar close
+- **Storage**: Maintain rolling array of last N volume values
+- **Startup**: Need minimum N bars before volume average is valid
+
+### 19.5 Indicator Library Recommendations
+
+**Option 1: Use Existing Technical Analysis Libraries**
+
+- Most programming languages have TA libraries (TA-Lib, ta-rs, pandas-ta, etc.)
+- Advantages: Tested implementations, optimized performance
+- Disadvantages: Dependency on external library, potential version conflicts
+
+**Option 2: Implement Manually**
+
+- Follow formulas above exactly as specified
+- Advantages: Full control, no dependencies, educational
+- Disadvantages: More development time, need thorough testing
+
+**Recommendation**:
+
+- Use established library for production (TA-Lib or equivalent)
+- Validate calculations against known test cases
+- Cross-check ADX/RSI/EMA values with TradingView or other platforms
+- Implement error handling for edge cases (insufficient data, zero divisions)
+
+## 20. Transaction Cost Model & P&L Calculation
+
+### 20.1 Complete Fee Structure (India - Options Trading)
+
+#### 20.1.1 All Transaction Cost Components
+
+**1. Brokerage**
+
+- **Angel One Rate**: ₹20 per order (flat fee for intraday options)
+- **Applied on**: Each order (both entry and exit)
+- **Note**: Verify current broker rates as they may change
+
+**2. Securities Transaction Tax (STT)**
+
+- **Buy Side**: No STT on options purchase
+- **Sell Side**: 0.0625% of premium (₹0.0625 per ₹100 premium)
+- **Applied on**: Premium amount only, not notional value
+- **Calculation**: Turnover × 0.0625 / 100
+
+**3. Exchange Transaction Charges (NSE)**
+
+- **Rate**: 0.053% of premium (₹0.053 per ₹100 premium)
+- **Applied on**: Both buy and sell sides
+- **Calculation**: Turnover × 0.053 / 100
+
+**4. SEBI Turnover Charges**
+
+- **Rate**: ₹10 per crore of turnover
+- **Applied on**: Premium turnover
+- **Calculation**: (Turnover / ₹1,00,00,000) × 10
+
+**5. GST (Goods and Services Tax)**
+
+- **Rate**: 18% on (Brokerage + Exchange Charges)
+- **Applied on**: Service charges only (not on STT/SEBI charges)
+- **Calculation**: (Brokerage + Exchange Charges) × 0.18
+
+**6. Stamp Duty**
+
+- **Rate**: 0.003% of turnover (varies by state)
+- **Applied on**: Buy side only
+- **Maharashtra/Delhi**: 0.003%
+- **Calculation**: Turnover × 0.003 / 100 (buy side only)
+
+### 20.2 Complete Cost Calculation Algorithm
+
+#### 20.2.1 Per-Order Cost Calculation
+
+**Input Parameters:**
+
+- Premium (price per unit)
+- Lot size (units per lot)
+- Number of lots
+- Order side (Buy or Sell)
+- Broker rate per order (₹20 for Angel One)
+
+**Calculation Steps:**
+
+1. **Calculate Turnover**:
+
+   - Turnover = Premium × Lot Size × Number of Lots
+
+2. **Calculate Brokerage**:
+
+   - Brokerage = Flat rate per order (₹20)
+
+3. **Calculate STT**:
+
+   - If Buy order: STT = 0
+   - If Sell order: STT = Turnover × 0.0625 / 100
+
+4. **Calculate Exchange Charges**:
+
+   - Exchange Charges = Turnover × 0.053 / 100
+
+5. **Calculate SEBI Charges**:
+
+   - SEBI Charges = (Turnover / 1,00,00,000) × 10
+
+6. **Calculate GST**:
+
+   - GST = (Brokerage + Exchange Charges) × 0.18
+
+7. **Calculate Stamp Duty**:
+
+   - If Buy order: Stamp Duty = Turnover × 0.003 / 100
+   - If Sell order: Stamp Duty = 0
+
+8. **Calculate Total Cost**:
+   - Total = Brokerage + STT + Exchange Charges + SEBI Charges + GST + Stamp Duty
+
+### 20.3 Complete P&L Calculation Process
+
+#### 20.3.1 Round-Trip P&L Algorithm
+
+**Input Parameters:**
+
+- Entry premium (buy price)
+- Exit premium (sell price)
+- Lot size
+- Number of lots
+
+**Calculation Steps:**
+
+1. **Calculate Total Quantity**:
+
+   - Total Quantity = Lot Size × Number of Lots
+
+2. **Calculate Entry Costs** (using buy-side cost algorithm):
+
+   - Entry Costs = Calculate transaction costs for buy order
+
+3. **Calculate Exit Costs** (using sell-side cost algorithm):
+
+   - Exit Costs = Calculate transaction costs for sell order
+
+4. **Calculate Gross P&L**:
+
+   - Gross P&L = (Exit Premium - Entry Premium) × Total Quantity
+
+5. **Calculate Net P&L**:
+
+   - Total Costs = Entry Costs + Exit Costs
+   - Net P&L = Gross P&L - Total Costs
+
+6. **Calculate Cost Percentage**:
+   - Cost % = (Total Costs / Gross P&L) × 100
+
+### 20.4 Worked Example - Full Trade Calculation
+
+**Trade Scenario:**
+
+- Symbol: NIFTY 23,500 CE
+- Entry: Buy at ₹150 premium
+- Exit: Sell at ₹180 premium
+- Lot size: 50 units
+- Quantity: 1 lot
+
+**Entry Costs Calculation (Buy Side):**
+
+1. Turnover = 150 × 50 = ₹7,500
+2. Brokerage = ₹20.00 (flat)
+3. STT = ₹0.00 (no STT on buy)
+4. Exchange = 7,500 × 0.053% = ₹3.98
+5. SEBI = (7,500 / 1,00,00,000) × 10 = ₹0.01
+6. GST = (20.00 + 3.98) × 18% = ₹4.32
+7. Stamp Duty = 7,500 × 0.003% = ₹0.23
+8. **Total Entry Costs = ₹28.54**
+
+**Exit Costs Calculation (Sell Side):**
+
+1. Turnover = 180 × 50 = ₹9,000
+2. Brokerage = ₹20.00 (flat)
+3. STT = 9,000 × 0.0625% = ₹5.63
+4. Exchange = 9,000 × 0.053% = ₹4.77
+5. SEBI = (9,000 / 1,00,00,000) × 10 = ₹0.01
+6. GST = (20.00 + 4.77) × 18% = ₹4.46
+7. Stamp Duty = ₹0.00 (no stamp duty on sell)
+8. **Total Exit Costs = ₹34.87**
+
+**P&L Summary:**
+
+- Gross P&L = (180 - 150) × 50 = ₹1,500.00
+- Total Costs = 28.54 + 34.87 = ₹63.41
+- **Net P&L = ₹1,436.59**
+- Cost as % of Gross P&L = 4.23%
+
+### 20.5 Break-Even Calculation
+
+#### 20.5.1 Break-Even Premium Formula
+
+**Objective**: Find exit premium where Net P&L = 0
+
+**Approximate Method**:
+
+1. Calculate entry costs (known)
+2. Assume exit costs ≈ entry costs (approximation)
+3. Total estimated costs = Entry costs × 2
+4. Break-even premium = Entry premium + (Total costs / Total quantity)
+
+**Example**:
+
+- Entry premium = ₹150
+- Entry costs = ₹28.54
+- Estimated total costs = ₹28.54 × 2 = ₹57.08
+- Break-even premium = 150 + (57.08 / 50) = 150 + 1.14 = ₹151.14
+
+**Note**: This is approximate because exit costs depend on exit premium
+
+#### 20.5.2 Precise Break-Even Calculation
+
+For exact break-even, solve iteratively:
+
+1. Start with approximate break-even premium
+2. Calculate actual exit costs at that premium
+3. Recalculate break-even = Entry premium + ((Entry costs + Exit costs) / Quantity)
+4. Repeat until convergence (usually 2-3 iterations)
+
+### 20.6 Minimum Profit Target Guidelines
+
+#### 20.6.1 Cost-Based Profit Targets
+
+**Given typical transaction costs of 4% of gross P&L:**
+
+- **Conservative Target**: 2× transaction costs
+
+  - Minimum gross move: 8-10% in premium
+  - Ensures healthy profit margin
+
+- **Realistic Target**: 1.5× transaction costs
+
+  - Minimum gross move: 6-8% in premium
+  - Balanced risk-reward
+
+- **Minimum Viable**: 1.2× transaction costs
+  - Minimum gross move: 5% in premium
+  - Tight margins, use sparingly
+
+#### 20.6.2 Strategy Profit Target Validation
+
+**Our Strategy Targets** (1% stop, 3% target on underlying):
+
+- Underlying move: 1-3% (NIFTY/BANKNIFTY)
+- Option premium move: Typically 10-30% (depending on delta)
+- Transaction costs: ~4% of premium move
+- **Cost ratio**: 4% / 20% average = 20% of profit
+- **Verdict**: Acceptable cost ratio (<25%)
+
+#### 20.6.3 Cost Impact by Position Size
+
+**Small Position (1 lot)**:
+
+- Fixed costs dominate (brokerage ₹20 + ₹20 = ₹40)
+- Cost percentage: Higher (~5-6% of turnover)
+- Need larger % moves to be profitable
+
+**Medium Position (2-3 lots)**:
+
+- Variable costs increase proportionally
+- Cost percentage: Moderate (~4% of turnover)
+- Optimal for most strategies
+
+**Large Position (5+ lots)**:
+
+- Variable costs dominate (STT, exchange charges)
+- Cost percentage: Lower (~3-3.5% of turnover)
+- Better efficiency but higher risk
+
+**Recommendation**: Trade 2-3 lots minimum for cost efficiency
+
+## 21. SEBI Compliance & Position Limits
+
+### 21.1 SEBI Position Limit Rules
+
+#### 21.1.1 Market-Wide Position Limit (MWPL)
+
+**MWPL Definition**: Maximum position allowed market-wide for each underlying
+
+**Calculation Formula**:
+
+- MWPL = **HIGHER OF**:
+  1. 15% of total open interest (in number of underlying units)
+  2. ₹500 crore worth of gross open positions
+
+**Example Calculation for NIFTY Options**:
+
+- Scenario: Total NIFTY OI = 50 lakh units (50,00,000)
+
+Method 1 - Based on OI:
+
+- MWPL = 15% × 50,00,000 = 7,50,000 units
+
+Method 2 - Based on notional value:
+
+- If NIFTY = 23,500
+- ₹500 crore / 23,500 = 2,12,766 units
+
+Final MWPL = MAX(7,50,000, 2,12,766) = **7,50,000 units**
+
+#### 21.1.2 Client-Level Position Limit
+
+**Client Limit Definition**: Maximum position allowed per individual client
+
+**Calculation Formula**:
+
+- Client Limit = **HIGHER OF**:
+  1. 1% of MWPL
+  2. ₹5 crore worth of gross open positions
+
+**Example Calculation**:
+
+- Given: MWPL = 7,50,000 units
+
+Method 1 - Based on MWPL:
+
+- Client Limit = 1% × 7,50,000 = 7,500 units
+
+Method 2 - Based on notional value:
+
+- If NIFTY = 23,500
+- ₹5 crore / 23,500 = 21,277 units
+
+Final Client Limit = MAX(7,500, 21,277) = **21,277 units**
+
+#### 21.1.3 Position Limit Application Scope
+
+**Combined Limit Across**:
+
+- All strike prices (ATM, ITM, OTM)
+- All expiry dates (weekly + monthly + quarterly)
+- Both CE and PE positions combined
+- All contract months
+
+**Important**: Bot must track total position across all option contracts for each underlying
+
+#### 21.1.4 Position Limit Tracking System
+
+**System Requirements**:
+
+1. **Initialize Limits**:
+
+   - Fetch current MWPL data from NSE website/API
+   - Calculate client limits based on MWPL
+   - Store limits per underlying (NIFTY, BANKNIFTY, FINNIFTY, etc.)
+
+2. **Track Current Positions**:
+
+   - Maintain running total of positions per underlying
+   - Update on every order fill (not on order placement)
+   - Include all strikes and expiries in total
+
+3. **Pre-Order Validation**:
+
+   - Before placing order, calculate: New Total = Current Position + Proposed Order Size
+   - If New Total > Client Limit: Reject order
+   - If New Total ≤ Client Limit: Allow order
+
+4. **Daily Sync**:
+   - Fetch latest MWPL data daily (OI changes daily)
+   - Recalculate client limits
+   - Update position tracking from broker API
+
+**Data Sources for MWPL**:
+
+- NSE URL: `https://www.nseindia.com/api/underlying-market-watch-all`
+- Update frequency: Daily after market close
+- Backup: Maintain conservative estimates if API unavailable
+
+### 21.2 SEBI Reporting Requirements
+
+#### 21.2.1 Algorithmic Trading Registration
+
+**Registration Process**:
+
+1. Inform broker that trading is algorithmic/automated
+2. Provide strategy details and risk management framework to broker
+3. Broker reviews and assigns unique Algo ID
+4. Exchange assigns algo identifier for order tagging
+5. All orders must be tagged with Algo ID
+
+**Required Documentation**:
+
+- Strategy description (ADX-based trend following)
+- Risk management controls (circuit breakers, loss limits, kill-switch)
+- Testing results (backtest, paper trading)
+- Operator details and escalation procedures
+
+#### 21.2.2 Audit Trail Requirements
+
+**Mandatory Records (5-year retention)**:
+
+**1. Order Audit Log** (every order):
+
+- Timestamp (millisecond precision)
+- Symbol and contract details
+- Order type (LIMIT/MARKET), side (BUY/SELL), product type (MIS/CNC/NRML)
+- Price and quantity
+- Unique order ID (internal + broker)
+- Order status (PENDING/COMPLETE/REJECTED/CANCELLED)
+- Rejection reason (if rejected)
+
+**2. Trade Execution Log** (every fill):
+
+- Fill timestamp
+- Fill price and quantity
+- Execution ID from broker
+- Slippage (difference from intended price)
+- Transaction costs breakdown
+
+**3. Signal Generation Log** (every signal):
+
+- Timestamp of signal generation
+- Symbol and recommended action (BUY_CE/BUY_PE/NO_TRADE)
+- Indicator values (ADX, +DI, -DI, RSI, EMA, Volume)
+- Reason for signal
+- Whether signal was acted upon (Yes/No) and reason if not
+
+**4. Risk Management Log** (all risk events):
+
+- Circuit breaker activations/deactivations
+- Position limit checks (pass/fail)
+- Daily loss limit checks
+- Margin utilization checks
+- Kill-switch triggers
+
+**5. System Event Log** (all system events):
+
+- System start/stop with version information
+- Configuration changes
+- Token expiry and refresh events
+- WebSocket disconnections and reconnections
+- API errors and retry attempts
+- Crash logs and stack traces
+
+**Log Format Requirements**:
+
+- Structured format (JSON or database)
+- Searchable and filterable
+- Immutable (append-only, no deletion/modification)
+- Include correlation IDs to track order lifecycle
+
+#### 21.2.3 Risk Management System (RMS) Requirements
+
+**SEBI-Mandated Controls**:
+
+**1. Order Price Validation**:
+
+- Maximum deviation from LTP (typically ±20%)
+- Reject orders outside price bands
+
+**2. Order Quantity Validation**:
+
+- Maximum order size per order
+- Lot size multiple validation
+- Freeze quantity checks
+
+**3. Position Limit Enforcement**:
+
+- SEBI client-level limits
+- Custom lower limits if desired
+- Real-time position tracking
+
+**4. Loss Limit Controls**:
+
+- Daily loss limit (halt trading after breach)
+- Weekly/monthly loss tracking
+- Consecutive loss limits
+
+**5. Kill-Switch Mechanism**:
+
+- Manual trigger (keyboard/CLI/API)
+- Automated triggers (loss limits, errors)
+- Emergency position closure
+- Trading halt capability
+
+### 21.3 Broker RMS (Risk Management System) Rules
+
+#### 21.3.1 Freeze Quantity Limits
+
+**Definition**: Maximum quantity per single order before order freezes
+
+**Current Limits** (verify periodically as these change):
+
+- **NIFTY Options**: 36,000 units (720 lots of 50)
+- **BANKNIFTY Options**: 14,400 units (960 lots of 15)
+- **FINNIFTY Options**: 40,000 units (1,000 lots of 40)
+
+**Freeze Behavior**:
+
+- Orders exceeding freeze quantity require manual approval
+- Automated systems cannot place orders above freeze quantity
+- Split large orders into multiple smaller orders if needed
+
+**Validation Algorithm**:
+
+1. Calculate total order quantity = Lot Size × Number of Lots
+2. Compare against freeze quantity for that underlying
+3. If quantity > freeze quantity: Reject order
+4. If quantity ≤ freeze quantity: Proceed
+
+#### 21.3.2 Price Band Restrictions
+
+**Definition**: Maximum price deviation from LTP allowed for orders
+
+**Standard Band**: ±20% from Last Traded Price (LTP)
+
+**Validation Algorithm**:
+
+1. Get current LTP for the option
+2. Calculate lower band = LTP × (1 - 0.20) = LTP × 0.80
+3. Calculate upper band = LTP × (1 + 0.20) = LTP × 1.20
+4. Check if order price is within [lower band, upper band]
+5. If outside band: Reject order
+6. If inside band: Proceed
+
+**Purpose**: Prevents erroneous orders (fat finger errors)
+
+#### 21.3.3 Margin Requirements
+
+**For Options Buying** (our strategy):
+
+- **Margin Required** = Premium × Lot Size × Number of Lots
+- No SPAN margin needed (unlike option selling)
+- Simply need funds to pay for the premium
+
+**Pre-Order Margin Check**:
+
+1. Calculate required margin = Order Value
+2. Query broker API for available margin
+3. If available margin < required margin: Reject order (insufficient funds)
+4. If available margin ≥ required margin: Proceed
+
+**Margin Monitoring**:
+
+- Check margin before each order
+- Alert if margin utilization > 70%
+- Pause trading if margin utilization > 80%
+
+#### 21.3.4 Lot Size and Tick Size Validation
+
+**Lot Size** (units per contract):
+
+- **NIFTY**: 50 units (verify current)
+- **BANKNIFTY**: 15 units (verify current)
+- **FINNIFTY**: 40 units (verify current)
+- Updates periodically (usually quarterly)
+
+**Tick Size** (minimum price increment):
+
+- **All Options**: ₹0.05 (5 paise)
+- Orders must be in multiples of tick size
+
+**Validation Algorithms**:
+
+**Lot Size Validation**:
+
+1. Total quantity must be multiple of lot size
+2. If (Quantity % Lot Size) ≠ 0: Reject order
+3. Valid example: 100 units for NIFTY (100 / 50 = 2 lots) ✓
+4. Invalid example: 75 units for NIFTY (75 / 50 = 1.5 lots) ✗
+
+**Tick Size Validation**:
+
+1. Order price must be multiple of ₹0.05
+2. Valid prices: 150.00, 150.05, 150.10, 150.15 ✓
+3. Invalid prices: 150.03, 150.07, 150.12 ✗
+
+### 21.4 Pre-Order Validation Checklist
+
+**Complete Validation Sequence** (execute before every order):
+
+**1. Position Limit Validation**:
+
+- Current position + proposed order ≤ Client limit
+- If exceeded: Error "Position limit breach"
+
+**2. Freeze Quantity Validation**:
+
+- Order quantity ≤ Freeze quantity
+- If exceeded: Error "Exceeds freeze quantity"
+
+**3. Price Band Validation**:
+
+- Order price within ±20% of LTP
+- If outside: Error "Price outside band"
+
+**4. Lot Size Validation**:
+
+- Quantity is multiple of lot size
+- If not: Error "Quantity must be multiple of lot size"
+
+**5. Tick Size Validation**:
+
+- Price is multiple of ₹0.05
+- If not: Error "Price must be multiple of tick size"
+
+**6. Margin Validation**:
+
+- Available margin ≥ Required margin
+- If insufficient: Error "Insufficient margin"
+
+**7. Contract Validation**:
+
+- Symbol exists and is active
+- Expiry date is future (not expired)
+- Strike price is valid
+
+**8. Market Hours Validation**:
+
+- Market is open
+- Not in pre-market or post-market
+- Not a holiday
+
+**Result**: Only if ALL validations pass, submit order to broker
+
+## 22. NSE Holiday Calendar & Market Hours
+
+### 22.1 NSE Holiday Calendar Integration
+
+#### 22.1.1 Holiday Calendar Data Source
+
+**NSE Official API**:
+
+- **URL**: `https://www.nseindia.com/api/holiday-master?type=trading`
+- **Method**: GET
+- **Headers Required**:
+  - User-Agent: Mozilla/5.0 (standard browser user agent)
+  - Accept: application/json
+- **Update Frequency**: Fetch annually at start of year, refresh monthly
+
+**Response Format** (JSON):
+
+- Field `CBM` contains array of holidays
+- Each holiday has:
+  - `tradingDate`: Date in format "DD-MMM-YYYY" (e.g., "26-Jan-2024")
+  - `weekDay`: Day of week (e.g., "Friday")
+  - `description`: Holiday name (e.g., "Republic Day")
+  - `Sr_no`: Serial number
+
+**Typical Indian Market Holidays** (15-20 per year):
+
+- Republic Day (January 26)
+- Holi
+- Good Friday
+- Dr. Ambedkar Jayanti
+- Mahavir Jayanti
+- Independence Day (August 15)
+- Ganesh Chaturthi
+- Dussehra
+- Diwali (Laxmi Pujan)
+- Diwali (Balipratipada)
+- Guru Nanak Jayanti
+- Christmas (December 25)
+
+#### 22.1.2 Holiday Calendar Management Process
+
+**1. Initialization (Start of Year)**:
+
+- Fetch holiday list from NSE API
+- Parse JSON response
+- Extract all trading dates
+- Convert dates from "DD-MMM-YYYY" format to standard date format
+- Store in local file: `data/holidays_2024.json` (year-specific)
+
+**2. Local Storage Format**:
+
+- Store as JSON array of ISO date strings
+- Example: `["2024-01-26", "2024-03-25", "2024-08-15", ...]`
+- Allows offline access without API dependency
+
+**3. Trading Day Validation Algorithm**:
+
+**Check if date is trading day**:
+
+1. If day is Saturday or Sunday → Not a trading day
+2. If date is in holiday list → Not a trading day
+3. Otherwise → Trading day
+
+**Implementation Logic**:
+
+- Input: Date to check
+- Step 1: Extract day of week
+- Step 2: If weekend (Sat/Sun), return False
+- Step 3: Convert date to standard format (YYYY-MM-DD)
+- Step 4: Check if date exists in holiday set
+- Step 5: If in holiday set, return False
+- Step 6: Return True (is a trading day)
+
+**4. Daily Check**:
+
+- At system startup, check if today is a trading day
+- If not a trading day, enter data management mode (no live trading)
+- If trading day, verify market hours and proceed
+
+**5. Fallback Mechanism**:
+
+- If API fetch fails, use locally cached file from previous update
+- If cache is stale (>30 days old), use conservative approach:
+  - Mark weekends as non-trading days
+  - Allow all weekdays (may miss some holidays, but safe)
+  - Alert operator about stale calendar data
+
+#### 22.1.3 Holiday Calendar Update Schedule
+
+**Annual Update**:
+
+- Fetch new year's calendar in December (before year starts)
+- Validate against previous year's calendar for sanity
+- NSE typically publishes next year's calendar by November
+
+**Monthly Refresh**:
+
+- Re-fetch calendar data monthly to catch any changes
+- NSE may occasionally add/remove holidays due to special circumstances
+
+**On-Demand Update**:
+
+- Manual refresh command: `bot calendar refresh`
+- After major announcements or emergency market closures
+
+### 22.2 Market Hours Definition & Management
+
+#### 22.2.1 Standard Market Hours (Monday-Friday)
+
+**Market Timings (IST)**:
+
+- **Pre-Market Session**: 09:00 AM - 09:15 AM
+
+  - Purpose: Pre-open session, indicative price discovery
+  - No options trading in pre-market
+  - Bot in preparation mode (data sync, token refresh)
+
+- **Regular Trading Hours**: 09:15 AM - 03:30 PM (3:30 PM)
+
+  - Primary trading session
+  - Bot actively trades during these hours
+  - Full strategy execution enabled
+
+- **Post-Market Session**: 03:30 PM - 04:00 PM
+  - Purpose: Closing session
+  - No new positions
+  - Data collection and reconciliation
+
+#### 22.2.2 Market Hours Validation Logic
+
+**1. Current Session Status Detection**:
+
+- Get current system time (IST timezone)
+- Compare with defined session boundaries
+- Return session status: HOLIDAY | PRE_MARKET | OPEN | POST_MARKET | CLOSED
+
+**Status Determination Logic**:
+
+```
+IF today is not a trading day (weekend or holiday):
+    Status = HOLIDAY
+ELSE IF current time >= 09:00 AND < 09:15:
+    Status = PRE_MARKET
+ELSE IF current time >= 09:15 AND < 15:30:
+    Status = OPEN
+ELSE IF current time >= 15:30 AND < 16:00:
+    Status = POST_MARKET
+ELSE:
+    Status = CLOSED
+```
+
+**2. Trading Permission Logic**:
+
+**Can Place New Trades**:
+
+- Market status = OPEN
+- AND current time < 14:30 (2:30 PM)
+- Reason: Stop new entries 30 minutes before market close
+
+**Must Close All Positions**:
+
+- Market status = OPEN
+- AND current time >= 15:20 (3:20 PM)
+- Reason: Exit all positions 10 minutes before market close
+
+**3. Time-Based Actions**:
+
+**09:00 AM** (Pre-Market):
+
+- Load today's trading plan
+- Refresh token if needed
+- Sync historical data
+- Verify system health
+- Subscribe to WebSocket feeds
+
+**09:15 AM** (Market Open):
+
+- Activate signal generation
+- Begin monitoring for entry opportunities
+- Enable order placement
+
+**14:30 PM** (2:30 PM):
+
+- Stop looking for new entry signals
+- Continue monitoring existing positions
+- Update stop-loss and targets
+
+**15:20 PM** (3:20 PM):
+
+- Begin systematic position closure
+- Close positions at market price if needed
+- Ensure all positions closed by 3:25 PM
+
+**15:30 PM** (Market Close):
+
+- Verify all positions closed
+- Generate end-of-day reports
+- Backup data files
+- Reconcile with broker
+
+**16:00 PM** (After Market Close):
+
+- Complete data download (historical data sync)
+- Calculate daily performance metrics
+- Update ADX categorization for tomorrow
+- Prepare next day's trading plan
+
+#### 22.2.3 Time Calculation Utilities
+
+**Minutes Until Market Close**:
+
+- Current time in minutes = (Hour × 60) + Minutes
+- Market close in minutes = (15 × 60) + 30 = 930
+- Minutes remaining = 930 - Current time in minutes
+
+**Example**:
+
+- Current time: 14:45 (2:45 PM)
+- Current in minutes: (14 × 60) + 45 = 885
+- Minutes remaining: 930 - 885 = 45 minutes
+
+**Time-Based Trading Rules**:
+
+- Stop new entries when minutes remaining < 30
+- Start closing positions when minutes remaining ≤ 10
+- Emergency close if minutes remaining ≤ 5
+
+### 22.3 Trading Session State Management
+
+#### 22.3.1 Session State Transitions
+
+**State Flow**:
+
+```
+CLOSED (before 9:00 AM)
+    ↓
+PRE_MARKET (9:00 AM - 9:15 AM)
+    ↓
+OPEN (9:15 AM - 3:30 PM)
+    ↓
+POST_MARKET (3:30 PM - 4:00 PM)
+    ↓
+CLOSED (after 4:00 PM)
+
+OR at any time:
+    ↓
+HOLIDAY (weekends, holidays)
+```
+
+#### 22.3.2 Bot Behavior by Session State
+
+**HOLIDAY State**:
+
+- No trading activities
+- Data management mode: Download historical data, fill gaps, run backtests
+- Maintenance tasks: Update holiday calendar, clean old data, optimize storage
+- System health checks and updates
+
+**PRE_MARKET State**:
+
+- Preparation mode
+- Token validation and refresh
+- WebSocket connection establishment
+- Historical data sync for today
+- Load configuration and trading plan
+- No order placement
+
+**OPEN State**:
+
+- Full trading mode enabled
+- Signal generation active
+- Order placement allowed (until 2:30 PM)
+- Position monitoring active
+- All risk controls active
+- Real-time P&L tracking
+
+**POST_MARKET State**:
+
+- Trading halted
+- Final position verification (should be zero)
+- Data collection and backup
+- Generate performance reports
+- Calculate metrics for today
+- Prepare next day's plan
+
+**CLOSED State**:
+
+- System in standby mode
+- Can be shut down safely
+- Background tasks only (if any)
+- Ready for next day's pre-market session
+
+### 22.4 Special Trading Sessions
+
+#### 22.4.1 Muhurat Trading (Diwali Special Session)
+
+**Timing**: Usually 18:15 - 19:15 (6:15 PM - 7:15 PM)
+**Duration**: 1 hour
+**Date**: Diwali evening (varies each year, usually October/November)
+
+**Bot Behavior**:
+
+- This is a special evening session
+- NSE publishes exact timings in advance
+- Bot must be configured with special session parameters
+- Consider whether to trade this session (usually low volume, symbolic trading)
+
+**Configuration**:
+
+- Add special session override for Diwali date
+- Override market hours: 18:15 - 19:15
+- Consider disabling automated trading (low liquidity, symbolic nature)
+
+#### 22.4.2 Early Market Closures
+
+**Scenarios**:
+
+- Special occasions (rare)
+- Market disruptions (technical issues)
+- Emergency situations
+
+**Bot Handling**:
+
+- Monitor for exchange announcements
+- If early closure announced:
+  - Stop new entries immediately
+  - Close positions at market price
+  - Don't wait for normal closure times
+- Manual intervention may be required
+
+### 22.5 Timezone & Time Synchronization
+
+#### 22.5.1 Timezone Management
+
+**Standard Timezone**: Asia/Kolkata (IST - Indian Standard Time)
+
+- UTC +5:30
+- No daylight saving time
+- All market hours are in IST
+
+**System Time Requirements**:
+
+- Ensure system clock is set to IST
+- Or convert all times to IST for comparison
+- NSE timestamps are always in IST
+
+#### 22.5.2 Time Synchronization
+
+**NTP Sync Requirement**:
+
+- System clock must be NTP-synchronized
+- Maximum acceptable drift: ±1 second
+- Critical for accurate timestamp logging (audit trail)
+
+**Time Accuracy Verification**:
+
+- Compare system time with NTP server daily
+- Alert if drift > 1 second
+- Critical for order timestamps and audit compliance
+
+**Time Sources**:
+
+- Exchange timestamps (when provided by broker API)
+- System clock (NTP-synced)
+- Store both exchange time and system time in logs
+
+**Time Handling**:
+
+- **Storage**: Store all timestamps in UTC
+- **Display**: Show in IST for operator
+- **Comparison**: Convert to IST for market hours validation
+
 ## Appendix A. Angel One SmartAPI Endpoints and Rust Examples
 
 ### A.1 Cargo Dependencies
