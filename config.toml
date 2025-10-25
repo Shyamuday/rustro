@@ -1,33 +1,16 @@
-# Trading Bot Configuration
-
-# ============================================
-# General Settings
-# ============================================
 enable_paper_trading = false
 log_level = "info"
 log_rotation = "daily"
 log_retention_days = 30
 audit_trail_enabled = true
-
-# ============================================
-# Time Windows
-# ============================================
 entry_window_start = "10:00:00"
 entry_window_end = "15:00:00"
 eod_exit_time = "15:20:00"
 market_close_time = "15:30:00"
-
-# ============================================
-# Data Settings
-# ============================================
 bar_ready_grace_sec = 120
 data_gap_threshold_sec = 300
 data_gap_check_interval_sec = 60
 recovery_timeout_sec = 120
-
-# ============================================
-# Risk Management
-# ============================================
 option_stop_loss_pct = 0.20
 trail_activate_pnl_pct = 0.02
 trail_gap_pct = 0.015
@@ -37,11 +20,40 @@ consecutive_loss_limit = 3
 vix_threshold = 25.0
 vix_spike_threshold = 30.0
 vix_resume_threshold = 22.0
-
-# ============================================
-# Position Sizing
-# ============================================
 base_position_size_pct = 10.0
+order_retry_steps_pct = [0.25, 0.50, 0.75, 1.00]
+order_max_retries = 4
+order_retry_backoffs_sec = [0, 2, 4, 8]
+retry_cap_sec = 30
+token_expiry_warning_min = 30
+token_grace_to_flatten_sec = 180
+token_check_interval_sec = 300
+rate_limit_orders = 10
+rate_limit_market_data = 100
+rate_limit_historical = 5
+ws_ping_interval_sec = 10
+ws_pong_timeout_sec = 5
+ws_reconnect_backoff_sec = [1, 2, 4, 8, 16]
+ws_max_reconnects_per_minute = 5
+strike_increment = 50
+initial_strike_range = 200
+strike_subscription_count = 9
+strategy_invalidate_on_recompute = false
+use_trailing_stop = true
+use_underlying_soft_check = false
+tick_size = 0.05
+price_band_pct = 0.10
+daily_adx_period = 14
+daily_adx_threshold = 20.0
+hourly_adx_period = 14
+hourly_adx_threshold = 25.0
+rsi_period = 14
+rsi_oversold = 30.0
+rsi_overbought = 70.0
+ema_period = 20
+angel_one_client_code = "YOUR_CLIENT_CODE"
+angel_one_password = "YOUR_PASSWORD"
+angel_one_totp_secret = "YOUR_TOTP_SECRET"
 
 [vix_mult_anchors]
 vix_12_or_below = 1.25
@@ -54,46 +66,12 @@ gte_5_days = 1.00
 days_2_to_4 = 0.75
 day_1 = 0.50
 
-# ============================================
-# Order Management
-# ============================================
-order_retry_steps_pct = [0.25, 0.50, 0.75, 1.00]
-order_max_retries = 4
-order_retry_backoffs_sec = [0, 2, 4, 8]
-retry_cap_sec = 30
+[freeze_quantity]
+nifty = 1800
+banknifty = 900
+finnifty = 1800
 
-# ============================================
-# Token Management
-# ============================================
-token_expiry_warning_min = 30
-token_grace_to_flatten_sec = 180
-token_check_interval_sec = 300
-
-# ============================================
-# API Rate Limits
-# ============================================
-rate_limit_orders = 10
-rate_limit_market_data = 100
-rate_limit_historical = 5
-
-# ============================================
-# WebSocket Settings
-# ============================================
-ws_ping_interval_sec = 10
-ws_pong_timeout_sec = 5
-ws_reconnect_backoff_sec = [1, 2, 4, 8, 16]
-ws_max_reconnects_per_minute = 5
-
-# ============================================
-# Strike Selection
-# ============================================
-strike_increment = 50
-initial_strike_range = 200
-strike_subscription_count = 9
-
-# ============================================
-# Feature Flags
-# ============================================
-strategy_invalidate_on_recompute = false
-use_trailing_stop = true
-use_underlying_soft_check = false
+[lot_size]
+nifty = 50
+banknifty = 15
+finnifty = 50
