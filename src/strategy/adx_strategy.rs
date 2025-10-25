@@ -255,7 +255,7 @@ impl AdxStrategy {
         current_bars: &[Bar],
     ) -> bool {
         // Check if alignment is lost
-        if let Ok((hourly_adx, hourly_plus_di, hourly_minus_di)) = 
+        if let Ok((_hourly_adx, hourly_plus_di, hourly_minus_di)) = 
             calculate_adx(current_bars, self.config.hourly_adx_period)
                 .ok_or_else(|| TradingError::MissingData("Insufficient bars".to_string()))
         {
@@ -324,4 +324,3 @@ mod tests {
             .collect()
     }
 }
-

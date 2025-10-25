@@ -1,10 +1,10 @@
 /// Main entry point for the trading bot
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use tracing_subscriber;
+use chrono::Timelike;
 
 use rustro::{
     broker::{AngelOneClient, AngelWebSocket, InstrumentCache, PaperTradingBroker, TokenManager},
@@ -13,12 +13,12 @@ use rustro::{
     error::{Result, TradingError},
     events::{Event, EventBus, EventPayload, EventType},
     orders::{OrderManager, OrderValidator},
-    positions::{Position, PositionManager, PositionStatus},
+    positions::PositionManager,
     risk::RiskManager,
-    strategy::{indicators::round_to_strike, AdxStrategy, EntrySignal},
+    strategy::{adx_strategy::EntrySignal, AdxStrategy},
     time::{get_market_timings, holidays::is_trading_day as is_trading_day_with_holidays},
-    utils::*,
-    Bar, Config, Direction, OptionType, Side,
+    utils::{calculate_days_to_expiry, generate_idempotency_key, is_in_entry_window},
+    Config, OrderType, Position, PositionStatus,
 };
 
 /// Application state
@@ -31,7 +31,7 @@ pub struct TradingApp {
     websocket: Option<Arc<AngelWebSocket>>,
     bar_aggregator: Arc<MultiBarAggregator>,
     instrument_cache: Arc<InstrumentCache>,
-    order_validator: Arc<OrderValidator>,
+    _order_validator: Arc<OrderValidator>,
     strategy: Arc<AdxStrategy>,
     order_manager: Arc<OrderManager>,
     position_manager: Arc<PositionManager>,
@@ -112,7 +112,7 @@ impl TradingApp {
         let instrument_cache = Arc::new(InstrumentCache::new(Arc::clone(&broker_client)));
         
         // Create order validator
-        let order_validator = Arc::new(OrderValidator::new(Arc::clone(&config)));
+        let _order_validator = Arc::new(OrderValidator::new(Arc::clone(&config)));
         
         // Create managers
         let strategy = Arc::new(AdxStrategy::new(Arc::clone(&config)));
@@ -161,7 +161,7 @@ impl TradingApp {
             websocket,
             bar_aggregator,
             instrument_cache,
-            order_validator,
+            _order_validator,
             strategy,
             order_manager,
             position_manager,
@@ -536,19 +536,41 @@ impl TradingApp {
         // Placeholder option price
         let option_price = 125.0;
         
-        // Place order (this will use retry logic automatically)
-        let order_id = self.order_manager.place_order(
-            symbol.clone(),
-            token.to_string(),
-            signal.side,
-            quantity,
-            option_price,
-            idempotency_key.clone(),
-        ).await?;
-        
-        info!("✅ Order placed: {}", order_id);
-        
-        // Create position
+        let order_id: String;
+        let filled_price: f64;
+
+        if self.config.enable_paper_trading {
+            if let Some(paper_broker) = &self.paper_broker {
+                // Use paper trading broker
+                order_id = paper_broker.place_order(
+                    symbol.clone(),
+                    signal.side,
+                    quantity,
+                    OrderType::Limit, // Assuming Limit for paper trades
+                    Some(option_price),
+                ).await?;
+                filled_price = paper_broker.get_fill_price(&order_id).await.unwrap_or(option_price);
+                info!("📝 [PAPER] Order executed: {} @ {:.2}", order_id, filled_price);
+            } else {
+                return Err(TradingError::ConfigError("Paper trading enabled but broker not initialized".to_string()));
+            }
+        } else {
+            // Use live order manager
+            order_id = self.order_manager.place_order(
+                symbol.clone(),
+                token.to_string(),
+                signal.side,
+                quantity,
+                option_price,
+                idempotency_key.clone(),
+            ).await?;
+            // In a live scenario, you would wait for a fill event.
+            // For now, we assume it's filled at the requested price.
+            filled_price = option_price;
+            info!("✅ Live order placed: {}", order_id);
+        }
+
+        // Create and open the position with the correct fill price
         let position = Position {
             position_id: order_id.clone(),
             symbol,
@@ -557,22 +579,22 @@ impl TradingApp {
             option_type: signal.option_type,
             side: signal.side,
             quantity,
-            entry_price: option_price,
+            entry_price: filled_price, // Use the actual filled price
             entry_time: chrono::Utc::now(),
             entry_time_ms: chrono::Utc::now().timestamp_millis(),
             underlying_entry: signal.underlying_ltp,
-            stop_loss: option_price * (1.0 - self.config.option_stop_loss_pct),
+            stop_loss: filled_price * (1.0 - self.config.option_stop_loss_pct),
             target: None,
             trailing_stop: None,
             trailing_active: false,
-            current_price: option_price,
+            current_price: filled_price,
             pnl: 0.0,
             pnl_pct: 0.0,
             status: PositionStatus::Open,
             entry_reason: signal.reason,
             idempotency_key,
         };
-        
+
         self.position_manager.open_position(position).await?;
         
         Ok(())

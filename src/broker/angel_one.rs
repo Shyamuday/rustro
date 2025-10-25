@@ -1,16 +1,15 @@
 /// Angel One SmartAPI REST client
-use chrono::{DateTime, NaiveDateTime, Utc};
-use reqwest::{Client, StatusCode};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
+use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::broker::tokens::{TokenManager, Tokens};
 use crate::error::{Result, TradingError};
-use crate::types::{Bar, Instrument, Order, OrderStatus, OrderType, Side};
+use crate::types::{Bar, Instrument, OrderType, Side};
 
 const BASE_URL: &str = "https://apiconnect.angelbroking.com";
-const TOTP_URL: &str = "https://smartapi.angelbroking.com";
 
 #[derive(Debug, Serialize)]
 struct LoginRequest {
@@ -25,7 +24,7 @@ struct LoginResponse {
     status: bool,
     message: String,
     #[serde(rename = "errorcode")]
-    error_code: Option<String>,
+    _error_code: Option<String>,
     data: Option<LoginData>,
 }
 
@@ -94,7 +93,7 @@ struct CandleResponse {
     status: bool,
     message: String,
     #[serde(rename = "errorcode")]
-    error_code: Option<String>,
+    _error_code: Option<String>,
     data: Option<Vec<Vec<String>>>,
 }
 
@@ -496,5 +495,3 @@ impl AngelOneClient {
         self.login().await
     }
 }
-
-

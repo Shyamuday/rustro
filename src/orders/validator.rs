@@ -17,7 +17,7 @@ impl OrderValidator {
         symbol: &str,
         quantity: i32,
         price: f64,
-        side: Side,
+        _side: Side,
         instrument: &Instrument,
         account_balance: f64,
     ) -> Result<()> {
@@ -224,4 +224,3 @@ mod tests {
         unimplemented!()
     }
 }
-

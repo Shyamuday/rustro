@@ -6,10 +6,10 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::types::Bar;
-use crate::error::{Result, TradingError};
+use crate::error::Result;
 
 /// Hybrid bar storage combining in-memory ring buffer and disk persistence
 pub struct HybridBarStore {
@@ -317,4 +317,3 @@ mod tests {
         let _ = std::fs::remove_file(temp_file);
     }
 }
-

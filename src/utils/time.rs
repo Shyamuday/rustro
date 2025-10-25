@@ -1,5 +1,5 @@
 /// Time utilities for market session management
-use chrono::{DateTime, NaiveTime, TimeZone, Utc};
+use chrono::{DateTime, Datelike, NaiveTime, TimeZone, Utc};
 use chrono_tz::Asia::Kolkata;
 
 /// Check if current time is within entry window
@@ -97,4 +97,3 @@ mod tests {
         assert!(!is_market_open(before_market_utc));
     }
 }
-

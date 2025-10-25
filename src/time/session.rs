@@ -1,5 +1,5 @@
 /// Market session and timing utilities
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, TimeZone, Utc};
 use chrono_tz::Asia::Kolkata;
 
 /// Check if today is a trading day (simplified - doesn't check holidays)
@@ -44,4 +44,3 @@ pub fn get_market_timings(date: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>)
     
     (market_open, market_close)
 }
-

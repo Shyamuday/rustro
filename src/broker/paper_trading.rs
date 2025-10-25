@@ -21,11 +21,11 @@ pub struct PaperTradingBroker {
 
 #[derive(Debug, Clone)]
 struct SimulatedOrder {
-    order_id: String,
-    symbol: String,
+    _order_id: String,
+    _symbol: String,
     side: Side,
-    quantity: i32,
-    order_type: OrderType,
+    _quantity: i32,
+    _order_type: OrderType,
     limit_price: Option<f64>,
     fill_price: Option<f64>,
     filled: bool,
@@ -52,11 +52,11 @@ impl PaperTradingBroker {
         let order_id = format!("PAPER_{}", uuid::Uuid::new_v4());
         
         let mut order = SimulatedOrder {
-            order_id: order_id.clone(),
-            symbol: symbol.clone(),
+            _order_id: order_id.clone(),
+            _symbol: symbol.clone(),
             side,
-            quantity,
-            order_type,
+            _quantity: quantity,
+            _order_type: order_type,
             limit_price,
             fill_price: None,
             filled: false,
@@ -137,4 +137,3 @@ mod tests {
         assert!(fill_price > 125.0); // Should have slippage
     }
 }
-

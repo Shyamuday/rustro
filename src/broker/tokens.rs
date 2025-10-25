@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
-use crate::error::{Result, TradingError};
+use crate::error::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tokens {
@@ -116,4 +116,3 @@ impl TokenManager {
         warn!("Tokens cleared");
     }
 }
-

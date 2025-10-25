@@ -12,7 +12,7 @@ pub struct Event {
     pub payload: EventPayload,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventType {
     // Initialization Events
     LogInitialized,
@@ -525,4 +525,3 @@ impl EventType {
         }
     }
 }
-

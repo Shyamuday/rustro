@@ -2,7 +2,7 @@
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info, warn};
 
@@ -38,8 +38,8 @@ struct WsTickData {
     token: String,
     #[serde(rename = "ltp")]
     last_price: Option<f64>,
-    #[serde(rename = "bs")]
-    bid: Option<f64>,
+    #[serde(rename = "bs")] // bid size
+    _bid: Option<f64>,
     #[serde(rename = "bp")]
     bid_price: Option<f64>,
     #[serde(rename = "ap")]
@@ -47,7 +47,7 @@ struct WsTickData {
     #[serde(rename = "v")]
     volume: Option<i64>,
     #[serde(rename = "e")]
-    exchange: Option<String>,
+    _exchange: Option<String>,
 }
 
 pub struct AngelWebSocket {
@@ -91,7 +91,7 @@ impl AngelWebSocket {
         let (ws_stream, _) = connect_async(&url).await
             .map_err(|e| TradingError::WebSocketError(format!("Connection failed: {}", e)))?;
         
-        let (mut write, mut read) = ws_stream.split();
+        let (_write, mut read) = ws_stream.split();
         
         {
             let mut connected = self.is_connected.write().await;
@@ -137,7 +137,7 @@ impl AngelWebSocket {
                             }
                         }
                     }
-                    Ok(Message::Ping(data)) => {
+                    Ok(Message::Ping(_data)) => {
                         debug!("Received ping, sending pong");
                         // Auto-handled by library
                     }
@@ -172,7 +172,7 @@ impl AngelWebSocket {
             _ => 1,
         };
         
-        let subscribe_req = WsSubscribeRequest {
+        let _subscribe_req = WsSubscribeRequest {
             action: 1, // Subscribe
             params: WsSubscribeParams {
                 mode: 1, // LTP mode (mode 2 = Quote, mode 3 = Snap Quote)
@@ -312,4 +312,3 @@ mod tests {
         assert!(tick.ltp > 0.0);
     }
 }
-

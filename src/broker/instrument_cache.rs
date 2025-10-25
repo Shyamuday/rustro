@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use chrono::{DateTime, NaiveDate, Utc};
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::broker::AngelOneClient;
 use crate::error::{Result, TradingError};
@@ -186,4 +186,3 @@ impl InstrumentCache {
         instruments.len()
     }
 }
-

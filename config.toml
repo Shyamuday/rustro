@@ -1,6 +1,15 @@
 # Trading Bot Configuration
 
 # ============================================
+# General Settings
+# ============================================
+enable_paper_trading = false
+log_level = "info"
+log_rotation = "daily"
+log_retention_days = 30
+audit_trail_enabled = true
+
+# ============================================
 # Time Windows
 # ============================================
 entry_window_start = "10:00:00"
@@ -9,12 +18,15 @@ eod_exit_time = "15:20:00"
 market_close_time = "15:30:00"
 
 # ============================================
-# Bar Processing
+# Data Settings
 # ============================================
 bar_ready_grace_sec = 120
+data_gap_threshold_sec = 300
+data_gap_check_interval_sec = 60
+recovery_timeout_sec = 120
 
 # ============================================
-# Risk Parameters
+# Risk Management
 # ============================================
 option_stop_loss_pct = 0.20
 trail_activate_pnl_pct = 0.02
@@ -22,10 +34,6 @@ trail_gap_pct = 0.015
 max_positions = 3
 daily_loss_limit_pct = 2.0
 consecutive_loss_limit = 3
-
-# ============================================
-# VIX Circuit Breaker
-# ============================================
 vix_threshold = 25.0
 vix_spike_threshold = 30.0
 vix_resume_threshold = 22.0
@@ -47,7 +55,7 @@ days_2_to_4 = 0.75
 day_1 = 0.50
 
 # ============================================
-# Order Retry
+# Order Management
 # ============================================
 order_retry_steps_pct = [0.25, 0.50, 0.75, 1.00]
 order_max_retries = 4
@@ -62,54 +70,19 @@ token_grace_to_flatten_sec = 180
 token_check_interval_sec = 300
 
 # ============================================
-# Data Quality
-# ============================================
-data_gap_threshold_sec = 300
-data_gap_check_interval_sec = 60
-recovery_timeout_sec = 120
-
-# ============================================
-# Broker Constraints
-# ============================================
-[freeze_quantity]
-nifty = 36000
-banknifty = 18000
-finnifty = 36000
-
-[lot_size]
-nifty = 50
-banknifty = 15
-finnifty = 40
-
-tick_size = 0.05
-price_band_pct = 20.0
-
-# ============================================
-# Rate Limiting
+# API Rate Limits
 # ============================================
 rate_limit_orders = 10
 rate_limit_market_data = 100
 rate_limit_historical = 5
 
 # ============================================
-# WebSocket
+# WebSocket Settings
 # ============================================
 ws_ping_interval_sec = 10
 ws_pong_timeout_sec = 5
 ws_reconnect_backoff_sec = [1, 2, 4, 8, 16]
 ws_max_reconnects_per_minute = 5
-
-# ============================================
-# Strategy
-# ============================================
-daily_adx_period = 14
-daily_adx_threshold = 25.0
-hourly_adx_period = 14
-hourly_adx_threshold = 20.0
-rsi_period = 14
-rsi_oversold = 30.0
-rsi_overbought = 70.0
-ema_period = 20
 
 # ============================================
 # Strike Selection
@@ -124,22 +97,3 @@ strike_subscription_count = 9
 strategy_invalidate_on_recompute = false
 use_trailing_stop = true
 use_underlying_soft_check = false
-enable_paper_trading = false
-
-# ============================================
-# Logging
-# ============================================
-log_level = "info"
-log_rotation = "daily"
-log_retention_days = 30
-audit_trail_enabled = true
-
-# ============================================
-# Broker Credentials (USE ENVIRONMENT VARIABLES IN PRODUCTION!)
-# ============================================
-angel_one_client_code = "S736247"
-angel_one_password = "541992"
-angel_one_totp_secret = "YOUR_TOTP_SECRET_HERE"  # Get base32 secret from authenticator app
-angel_one_api_key = "TJrbZ2ba"
-angel_one_secret_key = "c3359fe8-44a8-48f7-8a49-5ef84d780ea4"
-

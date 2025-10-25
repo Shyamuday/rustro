@@ -2,8 +2,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, Datelike, Duration, TimeZone, Timelike, Utc};
-use tracing::{debug, info, warn};
+use chrono::{DateTime, Datelike, TimeZone, Timelike, Utc};
+use tracing::{debug, info};
 
 use crate::data::ConcurrentBarStore;
 use crate::error::Result;
@@ -410,4 +410,3 @@ mod tests {
         assert_eq!(bar.volume, 1800);
     }
 }
-

@@ -46,7 +46,7 @@ impl EventBus {
     ) {
         let mut subscribers = self.subscribers.write().await;
         subscribers
-            .entry(event_type)
+            .entry(event_type.clone())
             .or_insert_with(Vec::new)
             .push(handler);
         debug!("Subscribed handler to event: {:?}", event_type);
@@ -254,4 +254,3 @@ mod tests {
         let _ = std::fs::remove_file("test_idempotency.jsonl");
     }
 }
-
