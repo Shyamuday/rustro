@@ -11,7 +11,7 @@ use crate::events::{Event, EventBus, EventPayload, EventType};
 use crate::types::{Bar, Tick};
 
 /// Timeframe for bar aggregation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Timeframe {
     OneMinute,
     FiveMinute,

@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::broker::tokens::{TokenManager, Tokens};
 use crate::error::{Result, TradingError};
@@ -115,7 +115,9 @@ pub struct AngelOneClient {
     token_manager: Arc<TokenManager>,
     client_code: String,
     password: String,
+    mpin: Option<String>,
     totp_secret: String,
+    api_key: String,
 }
 
 impl AngelOneClient {
@@ -123,7 +125,9 @@ impl AngelOneClient {
         token_manager: Arc<TokenManager>,
         client_code: String,
         password: String,
+        mpin: Option<String>,
         totp_secret: String,
+        api_key: String,
     ) -> Self {
         let client = Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -135,7 +139,9 @@ impl AngelOneClient {
             token_manager,
             client_code,
             password,
+            mpin,
             totp_secret,
+            api_key,
         }
     }
     
@@ -143,57 +149,131 @@ impl AngelOneClient {
     pub async fn login(&self) -> Result<Tokens> {
         info!("Attempting login to Angel One");
         
-        // Generate TOTP
-        let totp = self.generate_totp()?;
+        // Retry loop for manual TOTP entry
+        let max_attempts = 3;
+        let mut attempt = 0;
         
-        let login_req = LoginRequest {
-            client_code: self.client_code.clone(),
-            password: self.password.clone(),
-            totp,
-        };
-        
-        let response = self.client
-            .post(&format!("{}/rest/auth/angelbroking/user/v1/loginByPassword", BASE_URL))
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(&login_req)
-            .send()
-            .await?;
-        
-        let status = response.status();
-        let body = response.text().await?;
-        
-        debug!("Login response status: {}, body: {}", status, body);
-        
-        let login_response: LoginResponse = serde_json::from_str(&body)
-            .map_err(|e| TradingError::AuthenticationFailed(format!("Parse error: {}", e)))?;
-        
-        if !login_response.status {
-            return Err(TradingError::AuthenticationFailed(format!(
-                "Login failed: {}",
-                login_response.message
-            )));
+        loop {
+            attempt += 1;
+            
+            // Generate TOTP or prompt for manual input
+            let totp = if self.totp_secret == "YOUR_TOTP_SECRET" || self.totp_secret.is_empty() {
+                // Manual TOTP input
+                if attempt == 1 {
+                    println!("\n🔐 Angel One Login Required");
+                } else {
+                    println!("\n⚠️  Previous TOTP was invalid. Please try again.");
+                }
+                println!("Please enter the 6-digit TOTP code from your authenticator app:");
+                println!("(Attempt {}/{})", attempt, max_attempts);
+                print!("> ");
+                use std::io::{self, Write};
+                io::stdout().flush().unwrap();
+                
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)
+                    .map_err(|e| TradingError::AuthenticationFailed(format!("Failed to read TOTP: {}", e)))?;
+                
+                input.trim().to_string()
+            } else {
+                // Auto-generate TOTP from secret
+                self.generate_totp()?
+            };
+            
+            // Use MPIN if available, otherwise use password
+            let password_or_mpin = if let Some(ref mpin) = self.mpin {
+                info!("🔐 Using MPIN for authentication");
+                mpin.clone()
+            } else {
+                info!("🔐 Using Password for authentication");
+                self.password.clone()
+            };
+            
+            let login_req = LoginRequest {
+                client_code: self.client_code.clone(),
+                password: password_or_mpin,
+                totp,
+            };
+            
+            let response = self.client
+                .post(&format!("{}/rest/auth/angelbroking/user/v1/loginByPassword", BASE_URL))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header("X-UserType", "USER")
+                .header("X-SourceID", "WEB")
+                .header("X-ClientLocalIP", "127.0.0.1")
+                .header("X-ClientPublicIP", "127.0.0.1")
+                .header("X-MACAddress", "00:00:00:00:00:00")
+                .header("X-PrivateKey", &self.api_key)
+                .json(&login_req)
+                .send()
+                .await?;
+            
+            let status = response.status();
+            let body = response.text().await?;
+            
+            info!("📡 Login API Response:");
+            info!("   Status: {}", status);
+            info!("   Body: {}", body);
+            
+            let login_response: LoginResponse = serde_json::from_str(&body)
+                .map_err(|e| {
+                    error!("❌ Failed to parse login response: {}", e);
+                    error!("   Raw response body: {}", body);
+                    TradingError::AuthenticationFailed(format!("Parse error: {}", e))
+                })?;
+            
+            if !login_response.status {
+                // Check if it's a TOTP error and we have attempts left
+                let error_msg = login_response.message.to_lowercase();
+                
+                error!("❌ Login failed: {}", login_response.message);
+                error!("   Error type detected: {}", if error_msg.contains("totp") || error_msg.contains("otp") {
+                    "TOTP/OTP related"
+                } else if error_msg.contains("mpin") {
+                    "MPIN required"
+                } else if error_msg.contains("password") {
+                    "Password related"
+                } else {
+                    "Other"
+                });
+                
+                if (error_msg.contains("totp") || error_msg.contains("otp") || error_msg.contains("invalid")) 
+                    && attempt < max_attempts 
+                    && (self.totp_secret == "YOUR_TOTP_SECRET" || self.totp_secret.is_empty()) {
+                    // Retry for manual TOTP entry
+                    warn!("⚠️  TOTP authentication failed: {}. Retrying...", login_response.message);
+                    continue;
+                } else {
+                    // Non-TOTP error or max attempts reached
+                    return Err(TradingError::AuthenticationFailed(format!(
+                        "Login failed: {}",
+                        login_response.message
+                    )));
+                }
+            }
+            
+            // Login successful
+            let data = login_response.data
+                .ok_or_else(|| TradingError::AuthenticationFailed("No data in login response".to_string()))?;
+            
+            // Token expiry: JWT and Feed tokens expire at 3:30 AM next day
+            let now = Utc::now();
+            let expiry = self.calculate_token_expiry(now);
+            
+            let tokens = Tokens {
+                jwt_token: data.jwt_token,
+                feed_token: data.feed_token,
+                jwt_expiry: expiry,
+                feed_expiry: expiry,
+                refresh_token: Some(data.refresh_token),
+            };
+            
+            self.token_manager.set_tokens(tokens.clone()).await?;
+            
+            info!("✅ Login successful! Tokens expire at: {}", expiry);
+            return Ok(tokens);
         }
-        
-        let data = login_response.data
-            .ok_or_else(|| TradingError::AuthenticationFailed("No data in login response".to_string()))?;
-        
-        // Token expiry: JWT and Feed tokens expire at 3:30 AM next day
-        let now = Utc::now();
-        let expiry = self.calculate_token_expiry(now);
-        
-        let tokens = Tokens {
-            jwt_token: data.jwt_token,
-            feed_token: data.feed_token,
-            jwt_expiry: expiry,
-            feed_expiry: expiry,
-            refresh_token: Some(data.refresh_token),
-        };
-        
-        self.token_manager.set_tokens(tokens.clone()).await?;
-        
-        info!("Login successful, tokens expire at: {}", expiry);
-        Ok(tokens)
     }
     
     /// Calculate token expiry (3:30 AM next day IST)
@@ -298,7 +378,7 @@ impl AngelOneClient {
             .header("X-ClientLocalIP", "127.0.0.1")
             .header("X-ClientPublicIP", "127.0.0.1")
             .header("X-MACAddress", "00:00:00:00:00:00")
-            .header("X-PrivateKey", &self.client_code)
+            .header("X-PrivateKey", &self.api_key)
             .json(&order_req)
             .send()
             .await?;
@@ -353,7 +433,7 @@ impl AngelOneClient {
             .header("Authorization", format!("Bearer {}", tokens.jwt_token))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("X-PrivateKey", &self.client_code)
+            .header("X-PrivateKey", &self.api_key)
             .json(&candle_req)
             .send()
             .await?;
@@ -417,7 +497,7 @@ impl AngelOneClient {
             .post(&format!("{}/rest/secure/angelbroking/order/v1/getLtpData", BASE_URL))
             .header("Authorization", format!("Bearer {}", tokens.jwt_token))
             .header("Content-Type", "application/json")
-            .header("X-PrivateKey", &self.client_code)
+            .header("X-PrivateKey", &self.api_key)
             .json(&payload)
             .send()
             .await?;

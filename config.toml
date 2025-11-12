@@ -1,4 +1,4 @@
-enable_paper_trading = false
+enable_paper_trading = true
 log_level = "info"
 log_rotation = "daily"
 log_retention_days = 30
@@ -51,9 +51,12 @@ rsi_period = 14
 rsi_oversold = 30.0
 rsi_overbought = 70.0
 ema_period = 20
-angel_one_client_code = "YOUR_CLIENT_CODE"
-angel_one_password = "YOUR_PASSWORD"
+angel_one_client_code = "S736247"
+angel_one_password = "Lumia620@"
+angel_one_mpin = "1289"
 angel_one_totp_secret = "YOUR_TOTP_SECRET"
+angel_one_api_key = "TJrbZ2ba"
+angel_one_secret_key = "c3359fe8-44a8-48f7-8a49-5ef84d780ea4"
 
 [vix_mult_anchors]
 vix_12_or_below = 1.25

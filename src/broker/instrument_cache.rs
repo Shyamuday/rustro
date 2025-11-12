@@ -185,4 +185,10 @@ impl InstrumentCache {
         let instruments = self.instruments.read().await;
         instruments.len()
     }
+    
+    /// Get all instruments (for historical sync and analysis)
+    pub async fn get_all_instruments(&self) -> Vec<Instrument> {
+        let instruments = self.instruments.read().await;
+        instruments.clone()
+    }
 }

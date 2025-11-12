@@ -4,6 +4,7 @@ pub mod events;
 pub mod data;
 pub mod broker;
 pub mod strategy;
+pub mod trading;
 pub mod orders;
 pub mod positions;
 pub mod risk;

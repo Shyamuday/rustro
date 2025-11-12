@@ -335,7 +335,10 @@ pub struct Config {
     // Broker Credentials
     pub angel_one_client_code: String,
     pub angel_one_password: String,
+    pub angel_one_mpin: Option<String>,
     pub angel_one_totp_secret: String,
+    pub angel_one_api_key: String,
+    pub angel_one_secret_key: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

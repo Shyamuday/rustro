@@ -21,7 +21,6 @@ pub enum EventType {
     CredentialsLoaded,
     LoginApiCalled,
     TokenLoaded,
-    TokenNotFound,
     TokensStored,
     TokenMonitorActive,
     BrokerClientReady,
@@ -37,7 +36,6 @@ pub enum EventType {
     
     // Token Management
     TokenExpiryWarning,
-    TokenInvalid,
     TokenRefreshStarted,
     TokenRefreshSuccess,
     TokenRefreshFailed,
@@ -50,20 +48,12 @@ pub enum EventType {
     TickReceived,
     BarReady,
     DataGapDetected,
-    DataGapRecoveryRequired,
-    RecoveryStarted,
     RecoveryCompleted,
     RecoveryFailed,
     
     // Analysis & Strategy
-    DailyAnalysisRequired,
     DailyDirectionDetermined,
-    HourlyAnalysisRequired,
-    HourlyAlignmentConfirmed,
-    AlignmentLost,
-    EntryFiltersEvaluated,
     SignalGenerated,
-    NoTradeSignal,
     
     // Risk Management
     VixDataReceived,
@@ -167,9 +157,6 @@ pub enum EventPayload {
         expires_at: DateTime<Utc>,
         minutes_remaining: i64,
     },
-    TokenInvalid {
-        reason: String,
-    },
     TokenRefreshStarted {
         attempt: u32,
     },
@@ -215,15 +202,6 @@ pub enum EventPayload {
         gap_end: DateTime<Utc>,
         missing_bars: usize,
     },
-    DataGapRecoveryRequired {
-        symbol: String,
-        timeframe: String,
-    },
-    RecoveryStarted {
-        symbol: String,
-        timeframe: String,
-        bars_to_fetch: usize,
-    },
     RecoveryCompleted {
         symbol: String,
         timeframe: String,
@@ -235,10 +213,6 @@ pub enum EventPayload {
     },
     
     // Analysis
-    DailyAnalysisRequired {
-        symbol: String,
-        bar_time: DateTime<Utc>,
-    },
     DailyDirectionDetermined {
         symbol: String,
         direction: Direction,
@@ -246,26 +220,6 @@ pub enum EventPayload {
         daily_plus_di: f64,
         daily_minus_di: f64,
         reason: String,
-    },
-    HourlyAnalysisRequired {
-        symbol: String,
-        bar_time: DateTime<Utc>,
-    },
-    HourlyAlignmentConfirmed {
-        symbol: String,
-        hourly_adx: f64,
-        hourly_plus_di: f64,
-        hourly_minus_di: f64,
-        alignment_score: f64,
-    },
-    AlignmentLost {
-        symbol: String,
-        reason: String,
-    },
-    EntryFiltersEvaluated {
-        symbol: String,
-        passed: bool,
-        filter_results: Vec<(String, bool)>,
     },
     SignalGenerated {
         symbol: String,
@@ -278,10 +232,6 @@ pub enum EventPayload {
         underlying_ltp: f64,
         option_ltp: f64,
         vix: f64,
-    },
-    NoTradeSignal {
-        symbol: String,
-        reason: String,
     },
     
     // Risk
@@ -460,7 +410,6 @@ impl EventType {
             EventType::CredentialsLoaded => "CREDENTIALS_LOADED",
             EventType::LoginApiCalled => "LOGIN_API_CALLED",
             EventType::TokenLoaded => "TOKEN_LOADED",
-            EventType::TokenNotFound => "TOKEN_NOT_FOUND",
             EventType::TokensStored => "TOKENS_STORED",
             EventType::TokenMonitorActive => "TOKEN_MONITOR_ACTIVE",
             EventType::BrokerClientReady => "BROKER_CLIENT_READY",
@@ -472,7 +421,6 @@ impl EventType {
             EventType::SessionRevalidationRequired => "SESSION_REVALIDATION_REQUIRED",
             EventType::NoTradeModeActive => "NO_TRADE_MODE_ACTIVE",
             EventType::TokenExpiryWarning => "TOKEN_EXPIRY_WARNING",
-            EventType::TokenInvalid => "TOKEN_INVALID",
             EventType::TokenRefreshStarted => "TOKEN_REFRESH_STARTED",
             EventType::TokenRefreshSuccess => "TOKEN_REFRESH_SUCCESS",
             EventType::TokenRefreshFailed => "TOKEN_REFRESH_FAILED",
@@ -483,18 +431,10 @@ impl EventType {
             EventType::TickReceived => "TICK_RECEIVED",
             EventType::BarReady => "BAR_READY",
             EventType::DataGapDetected => "DATA_GAP_DETECTED",
-            EventType::DataGapRecoveryRequired => "DATA_GAP_RECOVERY_REQUIRED",
-            EventType::RecoveryStarted => "RECOVERY_STARTED",
             EventType::RecoveryCompleted => "RECOVERY_COMPLETED",
             EventType::RecoveryFailed => "RECOVERY_FAILED",
-            EventType::DailyAnalysisRequired => "DAILY_ANALYSIS_REQUIRED",
             EventType::DailyDirectionDetermined => "DAILY_DIRECTION_DETERMINED",
-            EventType::HourlyAnalysisRequired => "HOURLY_ANALYSIS_REQUIRED",
-            EventType::HourlyAlignmentConfirmed => "HOURLY_ALIGNMENT_CONFIRMED",
-            EventType::AlignmentLost => "ALIGNMENT_LOST",
-            EventType::EntryFiltersEvaluated => "ENTRY_FILTERS_EVALUATED",
             EventType::SignalGenerated => "SIGNAL_GENERATED",
-            EventType::NoTradeSignal => "NO_TRADE_SIGNAL",
             EventType::VixDataReceived => "VIX_DATA_RECEIVED",
             EventType::VixSpike => "VIX_SPIKE",
             EventType::VixNormalResumed => "VIX_NORMAL_RESUMED",

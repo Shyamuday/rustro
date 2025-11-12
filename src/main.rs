@@ -7,16 +7,17 @@ use tracing_subscriber;
 use chrono::Timelike;
 
 use rustro::{
-    broker::{AngelOneClient, AngelWebSocket, InstrumentCache, PaperTradingBroker, TokenManager},
+    broker::{AngelOneClient, AngelWebSocket, InstrumentCache, PaperTradingBroker, TokenExtractor, TokenManager},
     config::load_config,
-    data::{ConcurrentBarStore, MultiBarAggregator, Timeframe},
+    data::{ConcurrentBarStore, HistoricalDataSync, MultiBarAggregator, Timeframe},
     error::{Result, TradingError},
     events::{Event, EventBus, EventPayload, EventType},
     orders::{OrderManager, OrderValidator},
     positions::PositionManager,
     risk::RiskManager,
-    strategy::{adx_strategy::EntrySignal, AdxStrategy},
+    strategy::{adx_strategy::EntrySignal, AdxStrategy, BiasDirection, DailyBias, DailyBiasCalculator, HourlyCrossoverMonitor},
     time::{get_market_timings, holidays::is_trading_day as is_trading_day_with_holidays},
+    trading::PremarketSelector,
     utils::{calculate_days_to_expiry, generate_idempotency_key, is_in_entry_window},
     Config, OrderType, Position, PositionStatus,
 };
@@ -31,19 +32,29 @@ pub struct TradingApp {
     websocket: Option<Arc<AngelWebSocket>>,
     bar_aggregator: Arc<MultiBarAggregator>,
     instrument_cache: Arc<InstrumentCache>,
+    token_extractor: Arc<TokenExtractor>,
     _order_validator: Arc<OrderValidator>,
     strategy: Arc<AdxStrategy>,
     order_manager: Arc<OrderManager>,
     position_manager: Arc<PositionManager>,
     risk_manager: Arc<RiskManager>,
     
+    // Hybrid strategy components
+    daily_bias_calculator: Arc<DailyBiasCalculator>,
+    premarket_selector: Arc<PremarketSelector>,
+    hourly_crossover: Arc<HourlyCrossoverMonitor>,
+    
     // Bar stores
     daily_bars: Arc<ConcurrentBarStore>,
     hourly_bars: Arc<ConcurrentBarStore>,
     
+    // Historical data sync
+    historical_sync: Arc<HistoricalDataSync>,
+    
     // State
     session_uuid: String,
     nifty_token: Arc<RwLock<Option<String>>>,
+    daily_biases: Arc<RwLock<Vec<DailyBias>>>,
     daily_analysis_done: Arc<RwLock<bool>>,
     last_hourly_check: Arc<RwLock<Option<chrono::DateTime<chrono::Utc>>>>,
     shutdown: Arc<RwLock<bool>>,
@@ -84,7 +95,9 @@ impl TradingApp {
             Arc::clone(&token_manager),
             config.angel_one_client_code.clone(),
             config.angel_one_password.clone(),
+            config.angel_one_mpin.clone(),
             config.angel_one_totp_secret.clone(),
+            config.angel_one_api_key.clone(),
         ));
         
         // Create paper trading broker if enabled
@@ -111,6 +124,9 @@ impl TradingApp {
         // Create instrument cache
         let instrument_cache = Arc::new(InstrumentCache::new(Arc::clone(&broker_client)));
         
+        // Create token extractor
+        let token_extractor = Arc::new(TokenExtractor::new(Vec::new())); // Will be updated after instrument download
+        
         // Create order validator
         let _order_validator = Arc::new(OrderValidator::new(Arc::clone(&config)));
         
@@ -129,6 +145,17 @@ impl TradingApp {
             Arc::clone(&event_bus),
             Arc::clone(&config),
             Arc::clone(&position_manager),
+        ));
+        
+        // Create hybrid strategy components
+        let daily_bias_calculator = Arc::new(DailyBiasCalculator::new(
+            config.daily_adx_period,
+            config.daily_adx_threshold,
+        ));
+        let premarket_selector = Arc::new(PremarketSelector::new(Arc::clone(&token_extractor)));
+        let hourly_crossover = Arc::new(HourlyCrossoverMonitor::new(
+            config.hourly_adx_period,
+            config.hourly_adx_threshold,
         ));
         
         // Create bar stores
@@ -150,6 +177,15 @@ impl TradingApp {
         daily_bars.load_from_disk(100).await.ok();
         hourly_bars.load_from_disk(500).await.ok();
         
+        // Create historical data sync
+        let historical_sync = Arc::new(HistoricalDataSync::new(
+            Arc::clone(&broker_client),
+            Arc::clone(&instrument_cache),
+            Arc::clone(&daily_bars),
+            Arc::clone(&hourly_bars),
+            Arc::clone(&config),
+        ));
+        
         let session_uuid = uuid::Uuid::new_v4().to_string();
         
         Ok(TradingApp {
@@ -161,19 +197,118 @@ impl TradingApp {
             websocket,
             bar_aggregator,
             instrument_cache,
+            token_extractor,
             _order_validator,
             strategy,
             order_manager,
             position_manager,
             risk_manager,
+            daily_bias_calculator,
+            premarket_selector,
+            hourly_crossover,
             daily_bars,
             hourly_bars,
+            historical_sync,
             session_uuid,
             nifty_token: Arc::new(RwLock::new(None)),
+            daily_biases: Arc::new(RwLock::new(Vec::new())),
             daily_analysis_done: Arc::new(RwLock::new(false)),
             last_hourly_check: Arc::new(RwLock::new(None)),
             shutdown: Arc::new(RwLock::new(false)),
         })
+    }
+    
+    /// Setup event subscriptions for auto-triggering
+    async fn setup_event_subscriptions(&self) {
+        info!("📡 Setting up event subscriptions...");
+        
+        // Subscribe BarReady → Check for hourly crossover
+        let hourly_crossover = Arc::clone(&self.hourly_crossover);
+        let daily_biases = Arc::clone(&self.daily_biases);
+        let event_bus = Arc::clone(&self.event_bus);
+        
+        self.event_bus.subscribe(
+            EventType::BarReady,
+            Arc::new(move |event| {
+                let hourly_crossover = Arc::clone(&hourly_crossover);
+                let daily_biases = Arc::clone(&daily_biases);
+                let event_bus = Arc::clone(&event_bus);
+                
+                Box::pin(async move {
+                    if let EventPayload::BarReady { symbol, timeframe, .. } = &event.payload {
+                        if timeframe == "1h" {
+                            info!("⏰ Hourly bar ready for {}, checking crossovers...", symbol);
+                            
+                            // Check crossovers for all biased underlyings
+                            let biases = daily_biases.read().await;
+                            for bias in biases.iter() {
+                                if bias.bias == BiasDirection::NoTrade {
+                                    continue;
+                                }
+                                
+                                if let Ok(Some(signal)) = hourly_crossover.check_crossover(
+                                    &bias.underlying,
+                                    &bias.spot_token,
+                                    bias.bias,
+                                ).await {
+                                    // Save crossover signal to JSON
+                                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                                    let signal_file = format!("data/crossover_signal_{}_{}.json", 
+                                                             signal.underlying, timestamp);
+                                    if let Ok(signal_json) = serde_json::to_string_pretty(&signal) {
+                                        let _ = tokio::fs::write(&signal_file, &signal_json).await;
+                                        info!("💾 Saved crossover signal to: {}", signal_file);
+                                    }
+                                    
+                                    // Also append to daily signals log
+                                    let daily_signals_file = format!("data/crossover_signals_{}.jsonl", 
+                                                                    chrono::Utc::now().format("%Y%m%d"));
+                                    if let Ok(signal_json) = serde_json::to_string(&signal) {
+                                        use tokio::io::AsyncWriteExt;
+                                        if let Ok(mut file) = tokio::fs::OpenOptions::new()
+                                            .create(true)
+                                            .append(true)
+                                            .open(&daily_signals_file)
+                                            .await 
+                                        {
+                                            let _ = file.write_all(format!("{}\n", signal_json).as_bytes()).await;
+                                        }
+                                    }
+                                    
+                                    // Publish SignalGenerated event
+                                    let _ = event_bus.publish(Event::new(
+                                        EventType::SignalGenerated,
+                                        EventPayload::SignalGenerated {
+                                            symbol: signal.underlying.clone(),
+                                            underlying: signal.underlying.clone(),
+                                            direction: match signal.direction {
+                                                BiasDirection::CE => crate::types::Direction::Long,
+                                                BiasDirection::PE => crate::types::Direction::Short,
+                                                BiasDirection::NoTrade => crate::types::Direction::Flat,
+                                            },
+                                            strike: 0, // Will be filled by premarket selector
+                                            option_type: match signal.direction {
+                                                BiasDirection::CE => crate::types::OptionType::Call,
+                                                BiasDirection::PE => crate::types::OptionType::Put,
+                                                BiasDirection::NoTrade => crate::types::OptionType::Call,
+                                            },
+                                            side: crate::types::Side::Buy,
+                                            reason: format!("Hourly crossover aligned with daily bias"),
+                                            underlying_ltp: signal.close_price,
+                                            option_ltp: 0.0,
+                                            vix: 0.0,
+                                        },
+                                    )).await;
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                })
+            }),
+        ).await;
+        
+        info!("✅ Event subscriptions configured");
     }
     
     /// Start the trading bot
@@ -182,6 +317,9 @@ impl TradingApp {
         
         // Setup graceful shutdown handler
         self.setup_shutdown_handler().await;
+        
+        // Setup event subscriptions
+        self.setup_event_subscriptions().await;
         
         // Initialize session (authenticate)
         self.initialize_session().await?;
@@ -421,8 +559,10 @@ impl TradingApp {
     
     /// Run daily direction analysis
     async fn run_daily_analysis(&self) -> Result<()> {
-        info!("📊 Running daily direction analysis...");
+        info!("📊 Running daily bias calculation for all F&O underlyings...");
         
+        // TODO: Load daily_bias_tokens.json and fetch bars for all underlyings
+        // For now, just do NIFTY as example
         let daily_bars_vec = self.daily_bars.get_recent(30).await?;
         
         if daily_bars_vec.len() < self.config.daily_adx_period {
@@ -430,24 +570,51 @@ impl TradingApp {
             return Ok(());
         }
         
-        let direction = self.strategy.analyze_daily(&daily_bars_vec).await?;
-        
-        self.event_bus.publish(Event::new(
-            EventType::DailyDirectionDetermined,
-            EventPayload::DailyDirectionDetermined {
-                symbol: "NIFTY".to_string(),
-                direction,
-                daily_adx: 0.0, // Would be from actual calculation
-                daily_plus_di: 0.0,
-                daily_minus_di: 0.0,
-                reason: format!("Daily direction: {}", direction.as_str()),
-            },
-        )).await?;
+        // Calculate bias for NIFTY
+        if let Some(nifty_token) = self.nifty_token.read().await.as_ref() {
+            if let Some(bias) = self.daily_bias_calculator.calculate_bias(
+                "NIFTY",
+                nifty_token,
+                &daily_bars_vec,
+            ) {
+                info!("✅ NIFTY daily bias: {} (ADX: {:.2})", bias.bias.as_str(), bias.adx);
+                
+                // Store bias in memory
+                let mut biases = self.daily_biases.write().await;
+                biases.clear();
+                biases.push(bias.clone());
+                
+                // Save to JSON file for persistence
+                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                let daily_bias_file = format!("data/daily_bias_{}.json", chrono::Utc::now().format("%Y%m%d"));
+                let bias_json = serde_json::to_string_pretty(&biases.clone())?;
+                tokio::fs::write(&daily_bias_file, &bias_json).await?;
+                info!("💾 Saved daily bias to: {}", daily_bias_file);
+                
+                // Also save to latest file for easy access
+                tokio::fs::write("data/daily_bias_latest.json", &bias_json).await?;
+                
+                // Publish event
+                self.event_bus.publish(Event::new(
+                    EventType::DailyDirectionDetermined,
+                    EventPayload::DailyDirectionDetermined {
+                        symbol: "NIFTY".to_string(),
+                        direction: match bias.bias {
+                            BiasDirection::CE => crate::types::Direction::Long,
+                            BiasDirection::PE => crate::types::Direction::Short,
+                            BiasDirection::NoTrade => crate::types::Direction::Flat,
+                        },
+                        daily_adx: bias.adx,
+                        daily_plus_di: bias.plus_di,
+                        daily_minus_di: bias.minus_di,
+                        reason: format!("Daily bias: {}", bias.bias.as_str()),
+                    },
+                )).await?;
+            }
+        }
         
         let mut done = self.daily_analysis_done.write().await;
         *done = true;
-        
-        info!("✅ Daily direction determined: {}", direction.as_str());
         
         Ok(())
     }
@@ -595,7 +762,27 @@ impl TradingApp {
             idempotency_key,
         };
 
-        self.position_manager.open_position(position).await?;
+        self.position_manager.open_position(position.clone()).await?;
+        
+        // Save position to JSON
+        let position_file = format!("data/position_{}_{}.json", 
+                                   position.symbol, 
+                                   chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+        let position_json = serde_json::to_string_pretty(&position)?;
+        tokio::fs::write(&position_file, &position_json).await?;
+        info!("💾 Saved position to: {}", position_file);
+        
+        // Append to daily positions log
+        let daily_positions_file = format!("data/positions_{}.jsonl", 
+                                          chrono::Utc::now().format("%Y%m%d"));
+        let position_json_line = serde_json::to_string(&position)?;
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&daily_positions_file)
+            .await?;
+        file.write_all(format!("{}\n", position_json_line).as_bytes()).await?;
         
         Ok(())
     }
@@ -615,11 +802,35 @@ impl TradingApp {
             ).await? {
                 // Exit signal generated
                 info!("🚪 Exit signal for {}: {}", position.position_id, exit_reason);
+                
+                // Close position
                 self.position_manager.close_position(
                     &position.position_id,
                     current_price,
-                    exit_reason,
+                    exit_reason.clone(),
                 ).await?;
+                
+                // Save closed position to JSON
+                if let Some(closed_position) = self.position_manager.get_position(&position.position_id).await {
+                    let exit_file = format!("data/exit_{}_{}.json", 
+                                          closed_position.symbol,
+                                          chrono::Utc::now().format("%Y%m%d_%H%M%S"));
+                    let exit_json = serde_json::to_string_pretty(&closed_position)?;
+                    tokio::fs::write(&exit_file, &exit_json).await?;
+                    info!("💾 Saved exit to: {}", exit_file);
+                    
+                    // Append to daily exits log
+                    let daily_exits_file = format!("data/exits_{}.jsonl", 
+                                                  chrono::Utc::now().format("%Y%m%d"));
+                    let exit_json_line = serde_json::to_string(&closed_position)?;
+                    use tokio::io::AsyncWriteExt;
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&daily_exits_file)
+                        .await?;
+                    file.write_all(format!("{}\n", exit_json_line).as_bytes()).await?;
+                }
             }
         }
         
@@ -652,6 +863,24 @@ impl TradingApp {
             let filename = format!("data/trades_{}.json", chrono::Utc::now().format("%Y%m%d"));
             tokio::fs::write(filename, trades_json).await?;
             info!("💾 Saved {} trades", trades.len());
+        }
+        
+        // Sync historical data during off-hours
+        if let Some(nifty_token) = self.nifty_token.read().await.as_ref() {
+            info!("📊 Starting historical data sync...");
+            match self.historical_sync.sync_historical_data(nifty_token, "NIFTY").await {
+                Ok(report) => {
+                    info!("✅ Historical sync completed:");
+                    info!("   Daily bars: {}", report.daily_bars_downloaded);
+                    info!("   Hourly bars: {}", report.hourly_bars_downloaded);
+                    if !report.errors.is_empty() {
+                        warn!("   Errors: {}", report.errors.len());
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️  Historical sync failed: {}", e);
+                }
+            }
         }
         
         // Reset daily state
