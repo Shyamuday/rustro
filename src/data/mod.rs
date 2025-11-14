@@ -3,6 +3,7 @@ pub mod tick_buffer;
 pub mod bar_aggregator;
 pub mod historical_sync;
 pub mod historical_sync_multi;
+pub mod hourly_tokens;
 
 pub use bar_store::{ConcurrentBarStore, HybridBarStore};
 pub use tick_buffer::TickBuffer;

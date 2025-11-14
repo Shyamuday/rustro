@@ -11,7 +11,6 @@ use tracing::{info, warn};
 use crate::data::ConcurrentBarStore;
 use crate::error::Result;
 use crate::strategy::{calculate_adx, BiasDirection};
-use crate::types::Bar;
 
 /// Crossover signal
 #[derive(Debug, Clone, Serialize, Deserialize)]

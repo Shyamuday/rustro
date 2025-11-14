@@ -116,6 +116,18 @@ impl HybridBarStore {
     
     /// Load bars from disk and combine with memory
     async fn load_from_disk_and_memory(&self, n: usize) -> Result<Vec<Bar>> {
+        // If file doesn't exist, just return what's in memory
+        if !self.disk_file.exists() {
+            let result = self.memory_buffer
+                .iter()
+                .rev()
+                .take(n)
+                .rev()
+                .cloned()
+                .collect();
+            return Ok(result);
+        }
+        
         let file = tokio::fs::File::open(&self.disk_file).await?;
         let reader = BufReader::new(file);
         let mut lines = reader.lines();

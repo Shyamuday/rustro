@@ -42,6 +42,10 @@ pub enum EventType {
     
     // Data Collection
     InstrumentMasterDownloaded,
+    HistoricalDataSyncStarted,
+    HistoricalDataSyncCompleted,
+    HistoricalDataSyncFailed,
+    DataReady,
     SubscriptionsInitialized,
     WebSocketConnected,
     WebSocketDisconnected,
@@ -172,6 +176,26 @@ pub enum EventPayload {
     InstrumentMasterDownloaded {
         instrument_count: usize,
         file_path: String,
+    },
+    HistoricalDataSyncStarted {
+        symbol: String,
+        token: String,
+    },
+    HistoricalDataSyncCompleted {
+        symbol: String,
+        daily_bars_downloaded: usize,
+        hourly_bars_downloaded: usize,
+        total_bars: usize,
+    },
+    HistoricalDataSyncFailed {
+        symbol: String,
+        reason: String,
+    },
+    DataReady {
+        symbol: String,
+        daily_bars_count: usize,
+        hourly_bars_count: usize,
+        data_sufficient: bool,
     },
     SubscriptionsInitialized {
         symbols: Vec<String>,
@@ -425,6 +449,10 @@ impl EventType {
             EventType::TokenRefreshSuccess => "TOKEN_REFRESH_SUCCESS",
             EventType::TokenRefreshFailed => "TOKEN_REFRESH_FAILED",
             EventType::InstrumentMasterDownloaded => "INSTRUMENT_MASTER_DOWNLOADED",
+            EventType::HistoricalDataSyncStarted => "HISTORICAL_DATA_SYNC_STARTED",
+            EventType::HistoricalDataSyncCompleted => "HISTORICAL_DATA_SYNC_COMPLETED",
+            EventType::HistoricalDataSyncFailed => "HISTORICAL_DATA_SYNC_FAILED",
+            EventType::DataReady => "DATA_READY",
             EventType::SubscriptionsInitialized => "SUBSCRIPTIONS_INITIALIZED",
             EventType::WebSocketConnected => "WEBSOCKET_CONNECTED",
             EventType::WebSocketDisconnected => "WEBSOCKET_DISCONNECTED",

@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 use crate::broker::{AngelOneClient, InstrumentCache};
 use crate::data::ConcurrentBarStore;
 use crate::error::Result;
-use crate::types::{Instrument, OptionType};
+use crate::types::Instrument;
 use crate::Config;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,10 +57,12 @@ impl HistoricalDataSync {
         }
     }
 
-    /// Complete sync: underlying + relevant option strikes
+    /// Complete sync: underlying only (options selected based on daily bias later)
+    /// We only need underlying hourly bars for analysis
+    /// Options are selected dynamically based on daily bias (CE/PE) and ATM strike
     pub async fn sync_historical_data(&self, underlying_token: &str, underlying: &str) -> Result<SyncReport> {
-        info!("📊 Starting COMPLETE historical data sync for {}", underlying);
-        info!("   This will download: underlying + relevant option strikes");
+        info!("📊 Starting historical data sync for {}", underlying);
+        info!("   Downloading: underlying only (options selected based on daily bias)");
 
         let mut report = SyncReport {
             timestamp: Utc::now(),
@@ -75,8 +77,9 @@ impl HistoricalDataSync {
         // Create data directory
         tokio::fs::create_dir_all(&self.data_dir).await.ok();
 
-        // Step 1: Sync underlying (NIFTY index)
-        info!("📥 Step 1/3: Downloading underlying {} data...", underlying);
+        // Sync underlying only - this is what we need for hourly analysis
+        // Options will be selected dynamically based on daily bias (CE/PE) and ATM strike
+        info!("📥 Downloading underlying {} data...", underlying);
         match self.sync_underlying_data(underlying_token, underlying).await {
             Ok((daily, hourly)) => {
                 report.underlying_bars_downloaded = daily + hourly;
@@ -90,53 +93,17 @@ impl HistoricalDataSync {
                 report.errors.push(err_msg);
             }
         }
-
-        // Step 2: Identify relevant option strikes
-        info!("🎯 Step 2/3: Identifying relevant option strikes...");
-        let strikes = match self.identify_relevant_strikes(underlying).await {
-            Ok(strikes) => {
-                info!("✅ Identified {} relevant strikes to sync", strikes.len());
-                strikes
-            }
-            Err(e) => {
-                let err_msg = format!("Failed to identify strikes: {}", e);
-                warn!("⚠️  {}", err_msg);
-                report.errors.push(err_msg);
-                Vec::new()
-            }
-        };
-
-        // Step 3: Sync option strike data
-        if !strikes.is_empty() {
-            info!("📥 Step 3/3: Downloading option data for {} strikes...", strikes.len());
-            
-            for (idx, instrument) in strikes.iter().enumerate() {
-                info!("   [{}/{}] Syncing {} (strike: {})...", 
-                      idx + 1, strikes.len(), instrument.symbol, instrument.strike);
-                
-                match self.sync_option_data(instrument).await {
-                    Ok((daily, hourly)) => {
-                        report.option_strikes_synced += 1;
-                        report.daily_bars_downloaded += daily;
-                        report.hourly_bars_downloaded += hourly;
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to sync {}: {}", instrument.symbol, e);
-                        warn!("⚠️  {}", err_msg);
-                        report.errors.push(err_msg);
-                    }
-                }
-            }
-        }
+        
+        info!("✅ Historical sync complete - only underlying data needed for analysis");
+        info!("   Options will be selected dynamically based on daily bias (CE/PE)");
 
         // Save report
         self.save_sync_report(&report).await.ok();
 
-        info!("✅ COMPLETE historical sync finished:");
-        info!("   Underlying bars: {}", report.underlying_bars_downloaded);
-        info!("   Option strikes synced: {}", report.option_strikes_synced);
-        info!("   Total daily bars: {}", report.daily_bars_downloaded);
-        info!("   Total hourly bars: {}", report.hourly_bars_downloaded);
+        info!("✅ Historical sync finished:");
+        info!("   Underlying bars: {} (daily + hourly)", report.underlying_bars_downloaded);
+        info!("   Daily bars: {}", report.daily_bars_downloaded);
+        info!("   Hourly bars: {}", report.hourly_bars_downloaded);
         if !report.errors.is_empty() {
             warn!("   Errors encountered: {}", report.errors.len());
         }

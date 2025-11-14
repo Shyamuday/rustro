@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use tracing::info;
 
 use crate::broker::AngelOneClient;
@@ -166,16 +166,40 @@ impl InstrumentCache {
         options
     }
     
-    /// Check if cache needs refresh (daily)
+    /// Check if cache needs refresh
+    /// Returns true if:
+    /// 1. Cache is empty (never downloaded)
+    /// 2. Cache is very old (more than 30 days)
+    /// 3. Cache is from a different month (new month started)
     pub async fn needs_refresh(&self) -> bool {
         let last_updated = self.last_updated.read().await;
         
         match *last_updated {
-            None => true,
+            None => {
+                // No cache available - must download
+                true
+            }
             Some(last) => {
                 let now = Utc::now();
                 let diff = now - last;
-                diff.num_hours() >= 24 // Refresh daily
+                
+                // Check if cache is very old (more than 30 days)
+                if diff.num_days() >= 30 {
+                    return true;
+                }
+                
+                // Check if cache is from a different month (new month started)
+                let now_ist = now.with_timezone(&chrono_tz::Asia::Kolkata);
+                let last_ist = last.with_timezone(&chrono_tz::Asia::Kolkata);
+                
+                // If month or year changed, need to refresh
+                if now_ist.date_naive().month() != last_ist.date_naive().month() 
+                    || now_ist.date_naive().year() != last_ist.date_naive().year() {
+                    return true;
+                }
+                
+                // Otherwise, don't refresh (once downloaded in a month, no need to download again)
+                false
             }
         }
     }

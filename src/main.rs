@@ -19,7 +19,7 @@ use rustro::{
     time::{get_market_timings, holidays::is_trading_day as is_trading_day_with_holidays},
     trading::PremarketSelector,
     utils::{calculate_days_to_expiry, generate_idempotency_key, is_in_entry_window},
-    Config, OrderType, Position, PositionStatus,
+    Config, Direction, OrderType, OptionType, Position, PositionStatus, Side,
 };
 
 /// Application state
@@ -282,17 +282,17 @@ impl TradingApp {
                                             symbol: signal.underlying.clone(),
                                             underlying: signal.underlying.clone(),
                                             direction: match signal.direction {
-                                                BiasDirection::CE => crate::types::Direction::Long,
-                                                BiasDirection::PE => crate::types::Direction::Short,
-                                                BiasDirection::NoTrade => crate::types::Direction::Flat,
+                                                BiasDirection::CE => Direction::CE,
+                                                BiasDirection::PE => Direction::PE,
+                                                BiasDirection::NoTrade => Direction::NoTrade,
                                             },
                                             strike: 0, // Will be filled by premarket selector
                                             option_type: match signal.direction {
-                                                BiasDirection::CE => crate::types::OptionType::Call,
-                                                BiasDirection::PE => crate::types::OptionType::Put,
-                                                BiasDirection::NoTrade => crate::types::OptionType::Call,
+                                                BiasDirection::CE => OptionType::CE,
+                                                BiasDirection::PE => OptionType::PE,
+                                                BiasDirection::NoTrade => OptionType::CE,
                                             },
-                                            side: crate::types::Side::Buy,
+                                            side: Side::Buy,
                                             reason: format!("Hourly crossover aligned with daily bias"),
                                             underlying_ltp: signal.close_price,
                                             option_ltp: 0.0,
@@ -495,8 +495,123 @@ impl TradingApp {
             }
         }
         
+        // Save NIFTY token to JSON for hourly data
+        if let Some(nifty_token) = self.nifty_token.read().await.as_ref() {
+            let hourly_tokens = rustro::data::hourly_tokens::HourlyTokensManager::new(
+                "data/hourly_data_tokens.json".to_string()
+            );
+            if let Err(e) = hourly_tokens.add_token("NIFTY", nifty_token, "NIFTY").await {
+                warn!("⚠️  Failed to save hourly token to JSON: {}", e);
+            } else {
+                info!("💾 Saved NIFTY token to hourly_data_tokens.json");
+            }
+        }
+        
+        // Step 1: Sync historical data if needed (CRITICAL - must complete before analysis)
+        if let Some(nifty_token) = self.nifty_token.read().await.as_ref() {
+            if self.needs_data_sync().await {
+                // Publish event: Data sync started
+                self.event_bus.publish(Event::new(
+                    EventType::HistoricalDataSyncStarted,
+                    EventPayload::HistoricalDataSyncStarted {
+                        symbol: "NIFTY".to_string(),
+                        token: nifty_token.clone(),
+                    },
+                )).await?;
+                
+                info!("📊 Insufficient data - syncing historical data first...");
+                match self.historical_sync.sync_historical_data(nifty_token, "NIFTY").await {
+                    Ok(report) => {
+                        info!("✅ Historical sync completed:");
+                        info!("   Daily bars: {}", report.daily_bars_downloaded);
+                        info!("   Hourly bars: {}", report.hourly_bars_downloaded);
+                        
+                        // Publish event: Data sync completed
+                        self.event_bus.publish(Event::new(
+                            EventType::HistoricalDataSyncCompleted,
+                            EventPayload::HistoricalDataSyncCompleted {
+                                symbol: "NIFTY".to_string(),
+                                daily_bars_downloaded: report.daily_bars_downloaded,
+                                hourly_bars_downloaded: report.hourly_bars_downloaded,
+                                total_bars: report.daily_bars_downloaded + report.hourly_bars_downloaded,
+                            },
+                        )).await?;
+                        
+                        if !report.errors.is_empty() {
+                            warn!("   Errors: {}", report.errors.len());
+                        }
+                    }
+                    Err(e) => {
+                        // Publish event: Data sync failed
+                        self.event_bus.publish(Event::new(
+                            EventType::HistoricalDataSyncFailed,
+                            EventPayload::HistoricalDataSyncFailed {
+                                symbol: "NIFTY".to_string(),
+                                reason: e.to_string(),
+                            },
+                        )).await?;
+                        
+                        error!("❌ Historical sync failed: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                info!("✅ Sufficient historical data available");
+            }
+        }
+        
+        // Step 2: Verify data is ready and publish DataReady event
+        let daily_count = self.daily_bars.total_count().await;
+        let hourly_count = self.hourly_bars.total_count().await;
+        let data_sufficient = self.has_sufficient_data().await;
+        
+        self.event_bus.publish(Event::new(
+            EventType::DataReady,
+            EventPayload::DataReady {
+                symbol: "NIFTY".to_string(),
+                daily_bars_count: daily_count,
+                hourly_bars_count: hourly_count,
+                data_sufficient,
+            },
+        )).await?;
+        
+        if !data_sufficient {
+            return Err(TradingError::MissingData(
+                format!("Data not ready: {} daily bars (need {}), {} hourly bars (need {})",
+                       daily_count, self.config.daily_adx_period,
+                       hourly_count, self.config.hourly_adx_period)
+            ));
+        }
+        
+        info!("✅ Data ready: {} daily bars, {} hourly bars", daily_count, hourly_count);
+        
         info!("✅ Session initialized successfully");
         Ok(())
+    }
+    
+    /// Check if we need to sync historical data
+    async fn needs_data_sync(&self) -> bool {
+        !self.has_sufficient_data().await
+    }
+    
+    /// Check if we have sufficient data for analysis
+    async fn has_sufficient_data(&self) -> bool {
+        // Check if we have enough daily bars (need at least daily_adx_period)
+        let daily_count = self.daily_bars.total_count().await;
+        if daily_count < self.config.daily_adx_period as usize {
+            info!("📊 Insufficient daily bars: have {}, need {}", daily_count, self.config.daily_adx_period);
+            return false;
+        }
+        
+        // Check if we have enough hourly bars (need at least hourly_adx_period)
+        let hourly_count = self.hourly_bars.total_count().await;
+        if hourly_count < self.config.hourly_adx_period as usize {
+            info!("📊 Insufficient hourly bars: have {}, need {}", hourly_count, self.config.hourly_adx_period);
+            return false;
+        }
+        
+        info!("✅ Sufficient data: {} daily bars, {} hourly bars", daily_count, hourly_count);
+        true
     }
     
     /// Run one trading cycle
@@ -507,7 +622,28 @@ impl TradingApp {
         // Step 1: Fetch latest data
         self.fetch_and_update_bars().await?;
         
-        // Step 2: Daily analysis (runs once at 9:30 AM)
+        // Step 2: Verify data is still sufficient (should be ready from initialization)
+        if !self.has_sufficient_data().await {
+            warn!("⚠️  Data became insufficient - waiting for data sync...");
+            // Try to sync data if it became insufficient
+            if let Some(nifty_token) = self.nifty_token.read().await.as_ref() {
+                self.event_bus.publish(Event::new(
+                    EventType::HistoricalDataSyncStarted,
+                    EventPayload::HistoricalDataSyncStarted {
+                        symbol: "NIFTY".to_string(),
+                        token: nifty_token.clone(),
+                    },
+                )).await?;
+                
+                if let Err(e) = self.historical_sync.sync_historical_data(nifty_token, "NIFTY").await {
+                    warn!("⚠️  Data sync failed: {}", e);
+                    return Ok(()); // Skip this cycle, try again next time
+                }
+            }
+            return Ok(());
+        }
+        
+        // Step 3: Daily analysis (runs once at 9:30 AM)
         if now_ist.hour() >= 9 && now_ist.minute() >= 30 {
             let daily_done = self.daily_analysis_done.read().await;
             if !*daily_done {
@@ -516,7 +652,7 @@ impl TradingApp {
             }
         }
         
-        // Step 3: Hourly analysis (runs every hour after bar completes)
+        // Step 4: Hourly analysis (runs every hour after bar completes)
         if now_ist.minute() >= 15 {
             let last_check = self.last_hourly_check.read().await;
             let should_run = match *last_check {
@@ -533,10 +669,10 @@ impl TradingApp {
             }
         }
         
-        // Step 4: Update open positions
+        // Step 5: Update open positions
         self.update_positions().await?;
         
-        // Step 5: Check EOD exit (3:20 PM)
+        // Step 6: Check EOD exit (3:20 PM)
         if now_ist.hour() == 15 && now_ist.minute() >= 20 {
             self.eod_exit_positions().await?;
         }
@@ -546,13 +682,39 @@ impl TradingApp {
     
     /// Fetch latest bars from broker
     async fn fetch_and_update_bars(&self) -> Result<()> {
-        // Note: In production, you would:
-        // 1. Get NIFTY token from instrument master
-        // 2. Fetch recent candles
-        // 3. Update bar stores
+        // Load tokens from JSON for hourly data
+        let hourly_tokens = rustro::data::hourly_tokens::HourlyTokensManager::new(
+            "data/hourly_data_tokens.json".to_string()
+        );
         
-        // For now, using placeholder - would need actual NIFTY token
-        // let candles = self.broker_client.get_candles("99926000", "ONE_HOUR", from, to).await?;
+        let tokens_map = hourly_tokens.get_tokens_map().await
+            .map_err(|e| TradingError::FileError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to load hourly tokens: {}", e)
+            )))?;
+        
+        // Fetch hourly bars for each token
+        for (underlying, token) in tokens_map {
+            let to_date = chrono::Utc::now();
+            let from_date = to_date - chrono::Duration::hours(2); // Last 2 hours
+            
+            match self.broker_client.get_candles(&token, "ONE_HOUR", from_date, to_date).await {
+                Ok(bars) => {
+                    let bars_count = bars.len();
+                    if !bars.is_empty() {
+                        for bar in bars {
+                            if underlying == "NIFTY" {
+                                self.hourly_bars.append(bar).await?;
+                            }
+                        }
+                        info!("📊 Updated {} hourly bars for {}", bars_count, underlying);
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to fetch hourly bars for {}: {}", underlying, e);
+                }
+            }
+        }
         
         Ok(())
     }
@@ -561,13 +723,25 @@ impl TradingApp {
     async fn run_daily_analysis(&self) -> Result<()> {
         info!("📊 Running daily bias calculation for all F&O underlyings...");
         
+        // Verify we have sufficient data before calculating bias
+        if !self.has_sufficient_data().await {
+            warn!("⚠️  Insufficient data for daily bias calculation - data sync should have completed during initialization");
+            return Err(TradingError::MissingData(
+                "Insufficient daily bars for bias calculation. Please ensure historical data sync completed successfully.".to_string()
+            ));
+        }
+        
         // TODO: Load daily_bias_tokens.json and fetch bars for all underlyings
         // For now, just do NIFTY as example
         let daily_bars_vec = self.daily_bars.get_recent(30).await?;
         
         if daily_bars_vec.len() < self.config.daily_adx_period {
-            warn!("⚠️  Insufficient daily bars for analysis");
-            return Ok(());
+            warn!("⚠️  Insufficient daily bars for analysis: have {}, need {}", 
+                  daily_bars_vec.len(), self.config.daily_adx_period);
+            return Err(TradingError::MissingData(
+                format!("Need at least {} daily bars, but only have {}", 
+                       self.config.daily_adx_period, daily_bars_vec.len())
+            ));
         }
         
         // Calculate bias for NIFTY
@@ -600,9 +774,9 @@ impl TradingApp {
                     EventPayload::DailyDirectionDetermined {
                         symbol: "NIFTY".to_string(),
                         direction: match bias.bias {
-                            BiasDirection::CE => crate::types::Direction::Long,
-                            BiasDirection::PE => crate::types::Direction::Short,
-                            BiasDirection::NoTrade => crate::types::Direction::Flat,
+                            BiasDirection::CE => Direction::CE,
+                            BiasDirection::PE => Direction::PE,
+                            BiasDirection::NoTrade => Direction::NoTrade,
                         },
                         daily_adx: bias.adx,
                         daily_plus_di: bias.plus_di,

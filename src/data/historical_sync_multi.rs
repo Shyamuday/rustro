@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 use crate::broker::{AngelOneClient, InstrumentCache, TokenExtractor};
 use crate::data::ConcurrentBarStore;
 use crate::error::Result;
-use crate::types::{Instrument, OptionType};
+use crate::types::Instrument;
 use crate::Config;
 
 /// Supported underlying assets
